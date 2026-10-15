@@ -1,0 +1,21 @@
+# ---- 个人档案数据：绝不进公开库 ----
+users/default/
+users/__test__/
+users/*/points/
+users/*/evidence/
+users/*/experience/
+users/*/wisdom/
+users/*/features/
+users/*/questions/
+users/*/reports/
+.workbuddy/
+
+# ---- 本地备份与快照 ----
+archive/*.bak
+archive/*.tar
+archive/*.tar.gz
+
+# ---- 系统垃圾 ----
+.DS_Store
+*.pyc
+__pycache__/
