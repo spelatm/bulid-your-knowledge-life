@@ -194,8 +194,9 @@ def write_md(path, meta, body=""):
             v = "true" if v else "false"
         lines.append(f"{k}: {v}")
     lines.append("---")
+    # body 前导空行归一化：否则每次重写都会多累积几行（幂等性要求）
     with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n\n" + body)
+        f.write("\n".join(lines) + "\n\n" + body.lstrip("\n"))
 
 
 def parse_graph(subjects=None):
@@ -250,3 +251,185 @@ def parse_graph(subjects=None):
 
 def user_dir(user_id):
     return os.path.join(ROOT, "users", user_id)
+
+
+# ---------- 域 / 切面 / 先验 配置（_meta/domains.md） ----------
+#
+# 伞层（域）只作导航与聚合，永不参与评分。切面与先验都是**启发值**。
+# 配置全部来自 _meta/domains.md 的表格——改数值不改代码。
+
+_OR_SEP = r"[｜|,，]"
+_ZONE_CACHE = None
+
+
+def _sections(text):
+    """按 ## / ### 标题把文档切成 {标题: [行, ...]}。"""
+    sec, out = None, {}
+    for line in text.splitlines():
+        m = re.match(r"^#{2,3}\s+(.*)$", line)
+        if m:
+            sec = m.group(1).strip()
+            out.setdefault(sec, [])
+        elif sec is not None:
+            out[sec].append(line)
+    return out
+
+
+def _rows(lines):
+    """从若干行里抽出表格数据行（去掉表头与对齐分隔行）。"""
+    out = []
+    for line in lines:
+        s = line.strip()
+        if not s.startswith("|"):
+            continue
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        if not cells or not cells[0]:
+            continue
+        if all(c and set(c) <= set("-: ") for c in cells):
+            continue
+        if cells[0] in ("域", "学科", "匹配规则", "#"):
+            continue
+        out.append(cells)
+    return out
+
+
+def load_zone_config():
+    """读取 _meta/domains.md，返回域 / 切面 / 先验配置（带缓存）。"""
+    global _ZONE_CACHE
+    if _ZONE_CACHE is not None:
+        return _ZONE_CACHE
+    cfg = {"domains": [], "subject_map": {}, "course_map": {},
+           "facets": {"transferable": [], "context": []}, "prior": []}
+    path = os.path.join(ROOT, "_meta", "domains.md")
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            sec = _sections(f.read())
+
+        def rows(prefix):
+            for k, v in sec.items():
+                if k.startswith(prefix):
+                    return _rows(v)
+            return []
+
+        cfg["domains"] = [r[0] for r in rows("1.") if r[0]]
+        for r in rows("2."):
+            if len(r) >= 2 and r[1] not in ("——", "-", ""):
+                cfg["subject_map"][r[0]] = r[1]
+        for r in rows("3."):
+            if len(r) >= 3 and r[2] not in ("——", "-", ""):
+                cfg["course_map"][(r[0], r[1])] = r[2]
+
+        def clean(s):
+            """表格里的规则常用反引号包裹（`raw>0`），解析时剥掉。"""
+            return s.strip().strip("`").strip()
+
+        for r in rows("5.1"):
+            if len(r) >= 2:
+                cfg["facets"]["transferable"].append(
+                    (clean(r[0]), float(clean(r[1]))))
+        for r in rows("5.2"):
+            if len(r) >= 2:
+                cfg["facets"]["context"].append(
+                    (clean(r[0]), [x.strip() for x in re.split(_OR_SEP, clean(r[1]))
+                                   if x.strip()]))
+        for r in rows("6."):
+            if len(r) >= 2:
+                cfg["prior"].append((clean(r[0]), clean(r[1])))
+    _ZONE_CACHE = cfg
+    return cfg
+
+
+def domain_of(subject, course="", cfg=None):
+    """课程级覆盖优先于学科默认；都没有则返回空串（表示「未归类」）。"""
+    cfg = cfg or load_zone_config()
+    return (cfg["course_map"].get((str(subject), str(course)))
+            or cfg["subject_map"].get(str(subject), ""))
+
+
+def _match_rule(rule, item, ctx=None):
+    """判定一条配置规则是否命中。item 含 subject/course/name/raw_score。"""
+    rule = rule.strip()
+    if rule == "*":
+        return True
+    if rule == "raw>0":
+        return float(item.get("raw_score", 0) or 0) > 0
+    if rule.startswith("@"):
+        return bool((ctx or {}).get(rule[1:]))
+    for part in rule.split("&"):
+        m = re.match(r"^(subject|course|name)\s*(=|~)\s*(.+)$", part.strip())
+        if not m:
+            return False
+        field, op, val = m.group(1), m.group(2), m.group(3)
+        have = str(item.get(field, "") or "")
+        if op == "=":
+            if have != val:
+                return False
+        elif not any(v in have for v in re.split(_OR_SEP, val) if v):
+            return False
+    return True
+
+
+def facet_of(item, field, cfg=None):
+    """按 _meta/domains.md §5 的规则自上而下求切面值，命中即停。"""
+    cfg = cfg or load_zone_config()
+    for rule, val in cfg["facets"].get(field, []):
+        if _match_rule(rule, item):
+            return list(val) if isinstance(val, list) else val
+    return None
+
+
+def prior_of(item, ctx=None, cfg=None):
+    """按 §6 规则求先验档位（high / medium / low / minimal）。永不参与算分。"""
+    cfg = cfg or load_zone_config()
+    for rule, val in cfg["prior"]:
+        if _match_rule(rule, item, ctx):
+            return val
+    return "minimal"
+
+
+# ---------- 可读文件名 ----------
+
+ILLEGAL_CHARS = {"\\": "＼", "/": "／", ":": "：", "*": "＊",
+                 "?": "？", '"': "＂", "<": "＜", ">": "＞", "|": "｜"}
+NAME_MAXLEN = 60
+
+
+def safe_name(name, suffix=""):
+    """把知识点名转成跨平台安全的文件名（不含扩展名）。
+
+    `/ \\ : * ? " < > |` 换成全角——这些在 macOS/Linux 可用但在 Windows/SMB
+    共享上会失败。末尾句点会被 Windows 截断，一并去掉。
+    """
+    n = re.sub(r"\s+", " ", str(name or "")).strip().rstrip(".")
+    for k, v in ILLEGAL_CHARS.items():
+        n = n.replace(k, v)
+    if suffix:
+        n = f"{n}（{suffix}）"
+    if len(n) > NAME_MAXLEN:
+        n = n[:NAME_MAXLEN - 1] + "…"
+    return n or "未命名"
+
+
+def unique_path(directory, stem, ext=".md"):
+    """在 directory 下为 stem 找一个不冲突的路径：撞名则追加 -2 / -3…"""
+    path = os.path.join(directory, stem + ext)
+    i = 2
+    while os.path.exists(path):
+        path = os.path.join(directory, f"{stem}-{i}{ext}")
+        i += 1
+    return path
+
+
+def point_path(pdir, name, subject=""):
+    """知识点落盘路径：可读名优先 → 撞名加（学科）后缀 → 再撞加序号。
+
+    与 migrate_s1.py 的消歧规则保持一致，否则新老条目的命名会不统一。
+    """
+    p = os.path.join(pdir, safe_name(name) + ".md")
+    if not os.path.exists(p):
+        return p
+    if subject:
+        p2 = os.path.join(pdir, safe_name(name, subject) + ".md")
+        if not os.path.exists(p2):
+            return p2
+    return unique_path(pdir, safe_name(name, subject))

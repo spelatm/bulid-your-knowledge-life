@@ -172,22 +172,27 @@ def expand(user_id, input_path, dry_run=False, force=False):
             kp_id = core.new_id("kp")
             subject = str((g or {}).get("subject") or p.get("subject") or "其他")
             course = str((g or {}).get("course") or p.get("course") or TAG_SOURCE)
+            probe = {"subject": subject, "course": course, "name": name,
+                     "raw_score": seed}
             meta = {
                 "id": kp_id, "name": name, "subject": subject, "course": course,
+                "domain": core.domain_of(subject, course),
+                "transferable": core.facet_of(probe, "transferable"),
+                "context": core.facet_of(probe, "context"),
                 "importance": float(p.get("importance")
                                     or (g or {}).get("importance") or 0.6),
                 "profile": str(p.get("profile") or (g or {}).get("profile")
                                or "foundation"),
+                "prior_exposure": "high",
                 "raw_score": seed, "current_score": seed, "peak_score": seed,
+                "status": core.judge_status(seed, seed, seed)[0],
                 "last_verified_at": core.TODAY.isoformat(),
                 "origin": "inferred", "rejected": False, "evidence_ids": [],
-                "status": core.judge_status(seed, seed, seed)[0],
                 "tags": [strength, TAG_SOURCE],
-                "connections": [], "application": "", "related_to": [],
             }
             body = (f"# {name}\n\n> 由联网检索推断（{strength}），未经确认。\n"
                     f"> 依据：{reason or '—'}\n> 来源：{url or '—'}\n")
-            path = os.path.join(udir, "points", f"{kp_id}.md")
+            path = core.point_path(os.path.join(udir, "points"), name, subject)
         else:
             meta["raw_score"] = max(float(meta.get("raw_score", 0) or 0), seed)
             meta["current_score"] = meta["raw_score"]
@@ -217,6 +222,8 @@ def expand(user_id, input_path, dry_run=False, force=False):
         core.write_md(path, meta, body)
         added_ev += 1
         (scored if how else created).append(f"{target}　{strength}")
+        # 落盘后回填索引：同一次运行里出现重名条目时才能复用而不是重复建条
+        index[target] = (path, meta, body)
 
     # 输出：改动摘要 + 给用户的批量确认话术
     out = []

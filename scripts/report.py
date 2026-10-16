@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""生成知识分布报告（L0 概览 + 遗忘清单 + 盲区提示）。
+"""生成知识分布报告（L0 概览 + 广度×深度 + 遗忘清单 + 待验证清单）。
 
-这是给用户看的那一层：底层存连续分，报告只呈现等级与概览。
+这是给用户看的那一层：底层存连续分，报告只呈现等级、概览与**折叠**。
+
+原则 B：存储层保持完整（骨架全铺），聚合、折叠、涌现全部放本层解决。
 
 用法：
     python3 report.py --user u001                  # 终端打印
@@ -19,6 +21,7 @@ import core
 IMPORTANCE_DEFAULT = 0.6
 BAR_WIDTH = 20
 FILLED, EMPTY = "█", "░"
+UNCLASSIFIED = "未归类"
 
 
 def importance_of(meta):
@@ -63,6 +66,9 @@ def load_points(udir, subject=None):
             "_status": status, "_base": base, "_delta": delta or 0,
             "_importance": importance_of(meta),
             "_subject": str(meta.get("subject") or "未分类"),
+            "_domain": str(meta.get("domain") or "") or UNCLASSIFIED,
+            "_prior": str(meta.get("prior_exposure") or "minimal"),
+            "_path": path,
         })
         pts.append(meta)
     return pts
@@ -73,8 +79,55 @@ def bar(pct, width=BAR_WIDTH):
     return FILLED * n + EMPTY * (width - n)
 
 
+def weighted_mean(ps, key):
+    tw = sum(p["_importance"] for p in ps)
+    if not tw:
+        return 0.0
+    return sum(p[key] * p["_importance"] for p in ps) / tw
+
+
+def domain_stats(pts):
+    """按**域**聚合（取代旧的 9 学科平铺）。
+
+    广度 = 已触及比例（铺了多远）；深度 = 已触及部分的平均掌握度（扎得多深）。
+    """
+    g = collections.defaultdict(list)
+    for p in pts:
+        g[p["_domain"]].append(p)
+    out = []
+    for name, ps in g.items():
+        touched = [p for p in ps if p["_raw"] > 0]
+        out.append({
+            "domain": name, "n": len(ps), "touched": len(touched),
+            "breadth": len(touched) / len(ps) * 100 if ps else 0.0,
+            "depth": weighted_mean(touched, "_current"),
+        })
+    # 有记录的域在前（按触及数降序）→ 空域 → 未归类沉底
+    return sorted(out, key=lambda x: (x["touched"] == 0,
+                                      x["domain"] == UNCLASSIFIED,
+                                      -x["touched"], -x["depth"]))
+
+
+def shape_label(breadth, depth):
+    """把 (广度, 深度) 说成一句人话。阈值是启发式的，只用于描述。
+
+    入参必须与表格里**展示的取整值**一致，否则会出现
+    「显示 40% 却判成窄」这种自相矛盾。
+    """
+    b, d = round(breadth), round(depth)
+    if b < 20 and d < 20:
+        return "起步"
+    if b >= 40 and d >= 45:
+        return "扎实"
+    if b >= 40:
+        return "广而浅"
+    if d >= 45:
+        return "窄而深"
+    return "在铺开"
+
+
 def subject_stats(pts):
-    """学科聚合：加权平均，未触及计入分母。"""
+    """学科聚合（保留给 --subject 与终端摘要用）。"""
     agg = collections.defaultdict(lambda: {"w": 0.0, "sum": 0.0, "n": 0,
                                            "touched": 0})
     for p in pts:
@@ -90,7 +143,6 @@ def subject_stats(pts):
         score = (a["sum"] / a["w"]) if a["w"] else 0
         out.append({"subject": name, "score": score, "n": a["n"],
                     "touched": a["touched"]})
-    # 「其他」沉底，其余按掌握度降序
     return sorted(out, key=lambda x: (x["subject"] == "其他", -x["score"]))
 
 
@@ -111,11 +163,47 @@ def blind_spots(pts, top=10):
     排序原则：优先显示「你已有积累的学科里」的核心盲区——
     数学的核心知识点没学，对前端不重要；计算机科学里的才是真缺口。
     """
-    depth = collections.Counter(
-        p["_subject"] for p in pts if p["_raw"] > 0)
+    depth = collections.Counter(p["_subject"] for p in pts if p["_raw"] > 0)
     bs = [p for p in pts if p["_raw"] <= 0 and p["_importance"] >= 1.0]
     bs.sort(key=lambda p: (-depth.get(p["_subject"], 0), -p["_importance"]))
     return bs[:top]
+
+
+def to_verify(pts, per_subject=3):
+    """待验证清单：先验说「大概接触过」，但档案里完全没有记录。
+
+    只取 `medium` 档——即**同学科已有积累、这条却空缺**。
+    `low` 档（仅同域有触及）指向性太弱：一个计算机学生并不因为
+    学过数学，就大概接触过整个「人文与艺术」域，列出来只是噪声。
+    先验**不是分数**，它只决定排序。详见 design/…方案.md §7.2。
+    """
+    cand = [p for p in pts if p["_raw"] <= 0 and p["_prior"] == "medium"]
+    if not cand:
+        return []
+    g = collections.defaultdict(list)
+    for p in cand:
+        g[p["_subject"]].append(p)
+    out = []
+    for subj, ps in sorted(g.items(), key=lambda kv: -len(kv[1])):
+        by_course = collections.defaultdict(list)
+        for p in ps:
+            by_course[str(p.get("course", "") or "未分组")].append(p)
+        top = sorted(by_course.items(), key=lambda kv: -len(kv[1]))[:per_subject]
+        out.append({"subject": subj, "n": len(ps),
+                    "courses": [f"{c}（{len(v)}）" for c, v in top]})
+    return out
+
+
+def unconfirmed(pts, top=12):
+    """有分、但来源是推断且未经确认——展示时必须与实测分离。"""
+    uc = [p for p in pts if p["_raw"] > 0 and str(p.get("origin")) == "inferred"]
+    g = collections.defaultdict(list)
+    for p in uc:
+        g[p["_subject"]].append(p)
+    out = []
+    for subj, ps in sorted(g.items(), key=lambda kv: -len(kv[1]))[:top]:
+        out.append({"subject": subj, "n": len(ps)})
+    return out, len(uc)
 
 
 def recent_activity(pts, days=30):
@@ -141,6 +229,8 @@ def build_report(user_id, pts, subject=None):
     L.append(f"> 生成于 {core.TODAY.isoformat()}"
              f"{'　范围：' + subject if subject else ''}"
              f"　覆盖 {len(pts)} 个知识点")
+    L.append(">")
+    L.append("> 这是**展示层**：所有分数由证据层聚合得出，本文件不单独维护数据。")
     L.append("")
 
     if not pts:
@@ -154,32 +244,53 @@ def build_report(user_id, pts, subject=None):
 
     # 一、总体
     touched = sum(1 for p in pts if p["_raw"] > 0)
-    tw = sum(p["_importance"] for p in pts)
-    overall = sum(p["_current"] * p["_importance"] for p in pts) / tw
     tp = [p for p in pts if p["_raw"] > 0]
-    t_score = (sum(p["_current"] * p["_importance"] for p in tp) /
-               sum(p["_importance"] for p in tp)) if tp else 0
+    t_score = weighted_mean(tp, "_current")
+    overall = weighted_mean(pts, "_current")
+    _, n_uc = unconfirmed(pts)
     L.append("## 一、总体概览")
     L.append("")
     L.append(f"- 已触及 **{touched}** / 共 {len(pts)} 个知识点"
              f"（{touched/len(pts)*100:.0f}%）")
     L.append(f"- 已触及部分平均掌握度 **{t_score:.0f}**"
              f"　（全库含未触及：**{overall:.0f}**）")
-    L.append(f"- 正在生疏 **{sum(1 for p in pts if p['_status']=='rusty')}** 个")
+    L.append(f"- 正在生疏 **{sum(1 for p in pts if p['_status']=='rusty')}** 个"
+             f"　｜　待确认的推断分 **{n_uc}** 条（见第六节）")
     L.append("")
     L.append("> 全库均值把未触及项计入分母，会显著偏低；"
              "看真实水平请参照「已触及部分」。")
     L.append("")
 
-    # 二、学科分布
-    L.append("## 二、学科分布")
+    # 二、域分布（折叠）+ 广度×深度
+    rows = domain_stats(pts)
+    live = [r for r in rows if r["touched"] > 0 and r["domain"] != UNCLASSIFIED]
+    empty = [r for r in rows if r["touched"] == 0 and r["domain"] != UNCLASSIFIED]
+    other = [r for r in rows if r["domain"] == UNCLASSIFIED]
+    L.append("## 二、域分布（广度 × 深度）")
     L.append("")
-    L.append("| 学科 | 掌握度 | 条形 | 已触及/总数 |")
-    L.append("|---|---:|---|---|")
-    for s in subject_stats(pts):
-        L.append(f"| {s['subject']} | {s['score']:.0f}% | "
-                 f"`{bar(s['score'])}` | {s['touched']}/{s['n']} |")
+    L.append("**广度**＝该域里已触及的比例（铺了多远）　"
+             "**深度**＝已触及部分的平均掌握度（扎得多深）")
     L.append("")
+    L.append("| 域 | 深度 | 广度 | 分布（深度） | 已触及/总数 | 形状 |")
+    L.append("|---|---:|---:|---|---|---|")
+    for r in list(live) + list(other):
+        shape = ("—" if r["domain"] == UNCLASSIFIED
+                 else shape_label(r["breadth"], r["depth"]))
+        L.append(f"| {r['domain']} | {r['depth']:.0f}% | {r['breadth']:.0f}% | "
+                 f"`{bar(r['depth'])}` | {r['touched']}/{r['n']} | {shape} |")
+    L.append("")
+    if empty:
+        # 域名本身可能含顿号（「工程、制造与建造」），所以逐个加引号再连排，
+        # 否则会读成比实际更多的域
+        names = "".join(f"「{r['domain']}」" for r in empty)
+        total = sum(r["n"] for r in empty)
+        L.append(f"> **另有 {len(empty)} 个域尚无任何记录**（共 {total} 个知识点，"
+                 f"骨架已铺、随时可记）：")
+        L.append(f"> {names}")
+        L.append("")
+        L.append("> 它们不是「没收录」，而是「你还没在那儿留下痕迹」——"
+                 "这正是骨架全铺的意义：位置一直都在。")
+        L.append("")
 
     # 三、掌握度分层
     L.append("## 三、掌握度分层")
@@ -223,9 +334,44 @@ def build_report(user_id, pts, subject=None):
         L.append("没有未触及的核心知识点。")
     L.append("")
 
-    # 六、近期动态
+    # 六、待验证与待确认
+    L.append("## 六、待验证与待确认")
+    L.append("")
+    L.append("> **先验不是分数。** 下面两节都是**猜测**，"
+             "只用来告诉你「哪里可能有个位置」，不参与任何计算。")
+    L.append("")
+    tv = to_verify(pts)
+    L.append("### 6.1 待验证（按背景大概接触过，但档案里没有记录）")
+    L.append("")
+    if tv:
+        L.append("| 学科 | 未记录 | 集中在哪几门 |")
+        L.append("|---|---:|---|")
+        for r in tv:
+            courses = "、".join(r["courses"]) if r["courses"] else "—"
+            L.append(f"| {r['subject']} | {r['n']} 条 | {courses} |")
+        L.append("")
+        L.append("有就说一声，我会记下来；确实没有，忽略即可。")
+    else:
+        L.append("暂无——档案与背景已基本对齐。")
+    L.append("")
+    uc_rows, uc_total = unconfirmed(pts)
+    L.append("### 6.2 待你确认（推断分，非实测）")
+    L.append("")
+    if uc_rows:
+        L.append(f"以下 **{uc_total}** 条的分数是**背景 / 联网推断**出来的，"
+                 "未经你确认，**不计入真实水平**：")
+        L.append("")
+        for r in uc_rows:
+            L.append(f"- {r['subject']}：{r['n']} 条")
+        L.append("")
+        L.append("标错的随时告诉我，标 `rejected` 后就不再参与计算。")
+    else:
+        L.append("没有未经确认的推断分。")
+    L.append("")
+
+    # 七、近期动态
     ra = recent_activity(pts)
-    L.append("## 六、近期动态（近 30 天）")
+    L.append("## 七、近期动态（近 30 天）")
     L.append("")
     if ra:
         for p in ra:
@@ -247,15 +393,21 @@ def print_console(user_id, pts):
         return
     touched = sum(1 for p in pts if p["_raw"] > 0)
     tp = [p for p in pts if p["_raw"] > 0]
-    t_score = (sum(p["_current"] * p["_importance"] for p in tp) /
-               sum(p["_importance"] for p in tp)) if tp else 0
+    t_score = weighted_mean(tp, "_current")
     print(f"知识分布 · {user_id}　共 {len(pts)} 个知识点"
           f"　已触及 {touched}　已触及均值 {t_score:.0f}")
     print()
-    print("学科分布：")
-    for s in subject_stats(pts):
-        print(f"  {s['subject']:<12} {bar(s['score'])} "
-              f"{s['score']:>3.0f}%  ({s['touched']}/{s['n']})")
+    print("域分布（广度 × 深度）：")
+    for r in domain_stats(pts):
+        if r["touched"] == 0:
+            continue
+        print(f"  {r['domain']:<12} 深 {r['depth']:>3.0f}%  "
+              f"广 {r['breadth']:>3.0f}%  {bar(r['depth'], 12)}  "
+              f"({r['touched']}/{r['n']})")
+    hidden = [r for r in domain_stats(pts) if r["touched"] == 0]
+    if hidden:
+        print(f"  （另有 {len(hidden)} 个域尚无记录："
+              f"{'、'.join('「' + r['domain'] + '」' for r in hidden)}）")
     print()
     print("掌握度分层：")
     for k, v in level_dist(pts):

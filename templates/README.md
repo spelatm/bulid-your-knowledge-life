@@ -9,14 +9,20 @@
 ```yaml
 ---
 id: kp_                      # 自动生成，不手填
-name:
+name:                        # 同时就是文件名（可读，别用 id 命名文件）
 subject:
 course:
+domain:                      # 域：10 选 1，见 _meta/domains.md；留空 = 未归类
+transferable: 0.5            # 切面：可迁移性 0–1（>=0.7 即「通用与跨域方法」视图）
+context: [专业]               # 切面：适用语境（专业 / 生活）
 stage:                       # 可选：小学/初中/高中/大学/研究生/自学/职业
 profile: foundation          # 衰减档位，见 _meta/decay_profiles.md
+importance: 1.0              # 1.0 核心 / 0.6 一般 / 0.3 边缘
+prior_exposure: medium       # 先验接触概率，**永不参与算分**，只用于「待验证清单」
 raw_score: 0
 current_score: 0
 peak_score: 0
+status: untouched            # 掌握等级，由 raw/current/peak 判定
 last_verified_at:
 origin: user                 # preset / inferred / user
 rejected: false

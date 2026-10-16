@@ -1,6 +1,10 @@
 # 数据结构定义
 
 > 五轨统一字段规范。所有文件 YAML frontmatter + Markdown 正文。
+> **知识点文件名 = 知识点名**（如 `消息传递机制.md`），不用 id——
+> 这样档案用 Obsidian 等工具打开时是可直接阅读的，图谱也是中文名。
+> id 始终以 frontmatter 的 `id` 字段为准，脚本不依赖文件名。
+> 域 / 切面 / 先验的取值规则见 `_meta/domains.md`。
 
 ---
 
@@ -10,14 +14,19 @@
 ---
 id: kp_<8位哈希>
 name: 特征值分解
-subject: 数学
+subject: 数学                  # 学科（骨架的一级导航）
 course: 线性代数
+domain: 自然科学与数学          # 域：10 选 1，只作导航与聚合，**不参与评分**；空 = 未归类
+transferable: 0.6             # 切面：可迁移性 0–1（>=0.7 即「通用与跨域方法」视图）
+context: [专业]                # 切面：适用语境（专业 / 生活）
+prior_exposure: high          # 先验：接触概率 high/medium/low/minimal，**永不参与算分**
 stage: 大学                    # 可选
 profile: foundation           # 衰减档位
 importance: 1.0               # 核心1.0 / 一般0.6 / 边缘0.3，学科聚合加权用
 raw_score: 72.0
 current_score: 58.3
 peak_score: 78.0
+status: applicable            # 掌握等级：untouched/aware/understood/applicable/proficient
 last_verified_at: 2025-03-11
 origin: preset                # preset / inferred / user
 rejected: false               # 用户否认的推断项
@@ -25,6 +34,18 @@ evidence_ids: [ev_0012, ev_0047]
 tags: [核心, 考试重点]
 ---
 ```
+
+**三个新字段的性质必须分清**（`domain` / `transferable`+`context` / `prior_exposure`）：
+
+| 字段 | 是什么 | 参与算分 | 参与衰减 |
+|---|---|---|---|
+| `domain` | 检索与聚合的**索引** | ✗ | ✗ |
+| `transferable` / `context` | **切面**（横切属性） | ✗ | ✗ |
+| `prior_exposure` | **先验猜测**（用于「待验证清单」） | ✗ | ✗ |
+| `raw_score` 等 | 证据得出的**实测掌握度** | ✓ | ✓ |
+
+前三个都是**启发值**——它们决定「怎么展示、先问什么」，
+绝不决定「你有多强」。一旦混入算分，等于把公共分类当成了个人证据（违反不变量 I2）。
 
 正文：该知识点的个人化备注、当时怎么理解的、易错点。可为空。
 

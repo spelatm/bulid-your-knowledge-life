@@ -11,8 +11,8 @@ description: >
   背景超出静态模板时，必须联网检索该背景的知识体系与能力要求来扩展档案（§0.7）。
   不触发：与用户本人能力无关的纯事务请求（写邮件、翻译、算数、查天气、
   纯资讯检索）——直接办，不查档案、不写日志。
-version: 3.3.0
-tags: [knowledge, profile, expertise, memory, decay, onboarding, self-improving, network-inference, web-expansion, single-file]
+version: 3.4.0
+tags: [knowledge, profile, expertise, memory, decay, onboarding, self-improving, network-inference, web-expansion, single-file, obsidian, taxonomy]
 ---
 
 # 知识与经验量化系统 · 执行手册
@@ -246,7 +246,7 @@ JSON 格式 `{background, sources[], points[]}`，`points[].source` **必填**�
 ```
 users/<user_id>/
 ├─ profile.md          档案头（见 ②）
-├─ points/             一个知识点一个 .md，文件名 = id
+├─ points/             一个知识点一个 .md，**文件名 = 知识点名**（可读，见 ③）
 ├─ evidence/           append-only 证据，一条一个 .md
 ├─ questions/          问题日志
 ├─ experience/projects|actions|artifacts|playbooks/
@@ -276,7 +276,10 @@ onboarding: ready           # 三项齐全 = ready，否则 partial（字段名�
 
 > 三项取值出现 `""` `未填` `未知` `-` `—` 之一即视为缺失（模式 A 的判定口径）。
 
-**③ `points/<id>.md`**（id 形如 `kp_a1b2c3d4`，文件名 = id）
+**③ `points/<知识点名>.md`**——**文件名就是知识点名**（如 `消息传递机制.md`），
+不要用 id。理由：档案应当能用 Obsidian 之类的工具**直接打开阅读**，
+哈希文件名在那一侧是一堆乱码。`id` 仍以 frontmatter 的 `id` 字段为准，脚本不依赖文件名。
+（名称里的 `/ : * ? " < > |` 换成全角；跨学科重名加「（学科）」后缀。）
 
 ```yaml
 ---
@@ -284,8 +287,12 @@ id: kp_a1b2c3d4
 name: 消息传递机制
 subject: 计算机科学        # 学科，自己归纳，粒度保持稳定
 course: 图神经网络         # 课程/方向
+domain: 信息与计算技术      # 域：10 选 1，只作索引；空 = 未归类（见 _meta/domains.md）
+transferable: 0.5         # 切面：可迁移性 0–1，>=0.7 即「通用与跨域方法」视图
+context: [专业]            # 切面：适用语境（专业 / 生活）
 importance: 1.0           # 1.0 核心 / 0.6 一般 / 0.3 边缘
 profile: foundation       # 衰减档位，见 §3.3
+prior_exposure: medium    # 先验接触概率，**永不参与算分**，只用于「待验证清单」
 raw_score: 0
 current_score: 0
 peak_score: 0
@@ -295,9 +302,6 @@ rejected: false
 evidence_ids: []          # 支撑它的证据 id
 status: aware             # 按 §3.4 算出的状态名
 tags: []                  # 可放强度标签，如 [strong, 网络检索]
-connections: []           # 可选：关联知识点 id
-application:              # 可选：典型应用场景
-related_to: []            # 可选：主题/学科关联
 ---
 
 # 消息传递机制
@@ -405,6 +409,7 @@ knowledge-profile/
 ├─ inference/            背景推断模板
 ├─ templates/            各轨录入模板
 ├─ scripts/              可执行脚本（模式 A 才有）
+├─ design/               设计草案（未实施；渐进披露的细节落点）
 ├─ archive/              仅存 git 无法表达的资产（用户数据快照等）
 └─ users/<user_id>/      每用户隔离
    ├─ profile.md
@@ -661,13 +666,18 @@ python3 scripts/report.py --user <id> --save         # 落盘 users/<id>/reports
 python3 scripts/report.py --user <id> --subject 数学   # 单学科
 ```
 
-六节：总体概览 / 学科分布 / 掌握度分层 / 正在生疏 / 盲区提示 / 近期动态。
+七节：总体概览 / 域分布（广度 × 深度）/ 掌握度分层 / 正在生疏 / 盲区提示 /
+待验证与待确认 / 近期动态。
 
-两个刻意设计（**回答用户时也要守住**）：
+三个刻意设计（**回答用户时也要守住**）：
 - **全库均值与已触及均值并列**：全库均值把未触及项计入分母会显得很低，
   两个都给，避免用户误读为"我很差"
 - **盲区按「你已有积累的学科」优先排序**：数学的核心知识点没学，
   对前端不重要；计算机科学里的才是真缺口
+- **未触及的域折叠成一行**：骨架全铺保证了「位置一直在」，
+  但展示时必须折叠，否则报告会被一排 0% 淹没（原则 B）
+- **先验与实测视觉分离**：`prior_exposure` 推出的「待验证清单」
+  必须标注为**猜测**，绝不能与 `raw_score` 混在一张表里
 
 ---
 
@@ -793,7 +803,7 @@ python3 scripts/report.py --user __test__
 | 场景 | 模板 |
 |---|---|
 | 冷启动完成 | 铺了多少条 → 哪几块把握较高 → 如何修正 → 后续怎么补 |
-| 查看分布 | 学科 × 掌握度 → 强项 → 盲区 → 正在生疏 Top N |
+| 查看分布 | 域 × 广度/深度 → 强项 → 盲区 → 待验证清单 → 正在生疏 Top N |
 | 提问命中 rusty | 一句唤醒 → "你当时是在 XX 场景下掌握的" → 再展开 |
 | 同类事件 | 调出 Playbook → 说明来源（哪次项目）→ 按流程推进 |
 
@@ -818,7 +828,8 @@ python3 scripts/report.py --user __test__
 | `ingest.py` | 录入证据并重算分数（含负向证据与 `--verify`） | 手工按 §3 公式重算 |
 | `decay.py` | 每日衰减，更新状态与遗忘清单 | 手工按 §3.3 推算 |
 | `query.py` | 提问时查询：知识点状态 + Playbook + 画像 | 手工检索 `points/*.md` 的 name/tags |
-| `report.py` | 生成知识分布报告 | 手工按 §7 六节聚合 |
+| `report.py` | 生成知识分布报告（域折叠 + 广度×深度 + 待验证清单） | 手工按 §7 七节聚合 |
+| `migrate_s1.py` | **档案迁移**：可读命名 + 字段统一 + 清理旧字段。**幂等、不动分数** | 手工改名与补字段 |
 
 ### 10.2 知识点字段
 
@@ -834,9 +845,14 @@ python3 scripts/report.py --user __test__
 | origin | ✅ | preset / inferred / user |
 | evidence_ids | ✅ | 支撑分数的证据 |
 | rejected | ⬜ | 用户否认的推断项 |
-| connections | ⬜ | 关联知识点 ID，记录知识网络中的直接/间接关系 |
-| application | ⬜ | 典型应用场景，便于查找实践案例 |
-| related_to | ⬜ | 主题/学科关联，便于跨学科迁移分析 |
+| status | ✅ | 掌握等级：untouched / aware / understood / applicable / proficient |
+| domain | ⬜ | 域（10 选 1，索引；空 = 未归类）——**不参与算分** |
+| transferable | ⬜ | 切面：可迁移性 0–1，`>=0.7` 即「通用与跨域方法」视图 |
+| context | ⬜ | 切面：适用语境（专业 / 生活） |
+| prior_exposure | ⬜ | 先验接触概率 high/medium/low/minimal，**永不参与算分** |
+
+> 末三行的字段都是**启发值**：决定「怎么展示、先问什么」，不决定「你有多强」。
+> 取值规则全部在 `_meta/domains.md`——改数值不改代码。
 
 完整字段定义见 `_meta/schema.md`，录入模板见 `templates/README.md`。
 

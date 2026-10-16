@@ -261,6 +261,9 @@ def build_profile(user_id, edu, job, region, subjects=None, keywords=None):
         print("   python3 scripts/expand_profile.py --user <id> --input inferences.json")
         print("   （也可用 --edu-kw/--job-kw/--region-kw 手工指定语义关键词重试）")
 
+    # 背景指向的学科集合——用于给新条目定先验档位（见下方 save）
+    picked_set = set(subjects or [])
+
     # 推断来源写进 tags，供追溯
     def source_of(name):
         if name in edu_hits:
@@ -274,7 +277,7 @@ def build_profile(user_id, edu, job, region, subjects=None, keywords=None):
 
 
     def save(name, subject, course, importance, profile, strength,
-             application="", note="", source=""):
+             note="", source=""):
         pid = core.new_id("kp")
         scored = strength is not None
         raw = STRENGTH_SCORE[strength] if scored else 0.0
@@ -283,20 +286,27 @@ def build_profile(user_id, edu, job, region, subjects=None, keywords=None):
             body += f"\n> 由背景推断（{strength}），未经确认。\n"
             if note:
                 body += f"> {note}\n"
+        probe = {"subject": subject, "course": course, "name": name,
+                 "raw_score": raw}
+        # 先验（永不参与算分）：有推断分 → high；无分但在背景指向的学科里
+        # → medium（这正是报告里「待验证」清单的来源）
+        prior = ("high" if scored
+                 else ("medium" if subject in picked_set else "minimal"))
         core.write_md(
-            os.path.join(udir, "points", f"{pid}.md"),
-            {"id": pid, "name": name, "subject": subject,
-             "course": course, "importance": importance,
-             "profile": profile, "raw_score": raw, "current_score": raw,
-             "peak_score": raw,
+            core.point_path(os.path.join(udir, "points"), name, subject),
+            {"id": pid, "name": name, "subject": subject, "course": course,
+             "domain": core.domain_of(subject, course),
+             "transferable": core.facet_of(probe, "transferable"),
+             "context": core.facet_of(probe, "context"),
+             "importance": importance, "profile": profile,
+             "prior_exposure": prior,
+             "raw_score": raw, "current_score": raw, "peak_score": raw,
+             "status": core.judge_status(raw, raw, raw)[0],
              "last_verified_at": core.TODAY.isoformat() if scored else "",
              "origin": "inferred" if scored else "preset",
              "rejected": False, "evidence_ids": [],
-             "status": core.judge_status(raw, raw, raw)[0],
              # 来源用**命中的推断名**去查，否则永远落到兜底值
-             "tags": ([strength, source or source_of(name)] if scored else []),
-             # schema.md 已定义、此前从未落盘的可选字段，留空骨架待使用中补
-             "connections": [], "application": application, "related_to": []},
+             "tags": ([strength, source or source_of(name)] if scored else [])},
             body,
         )
 
@@ -334,6 +344,11 @@ def build_profile(user_id, edu, job, region, subjects=None, keywords=None):
             core.write_md(e["path"], m, body)
             added += 1
 
+        # 补充模式下，用户已触及的学科即「背景指向」——新补进来的骨架条目
+        # 按 medium 记先验，才会出现在报告的「待验证」清单里
+        picked_set.update(str(e["meta"].get("subject", "")) for e in existing
+                          if float(e["meta"].get("raw_score", 0) or 0) > 0)
+
         # 骨架会演进（新增课程/知识点），已有档案不该因此缺条、更不该
         # 与旧的「其他」条目并存。补齐缺失条目；别名已存在的视为已满足，
         # 用户明确否认（rejected）的不再复活。
@@ -366,6 +381,7 @@ def build_profile(user_id, edu, job, region, subjects=None, keywords=None):
             picked = sorted({g["subject"] for g in graph})
             print("⚠️ 背景推断无命中，退回铺开全部学科（报告噪声较大，"
                   "建议先走 §0.7 联网扩展）。")
+    picked_set.update(picked)
     # 学科选定后再分配一次：否则推断项会被未铺开学科的知识点抢走，
     # 结果是它既不赋分、也不会进「其他」，静默丢失
     laid = [g for g in graph if g["subject"] in picked]
