@@ -102,7 +102,7 @@ def check(user_id, as_json=False):
         if touched == 0:
             print("\n⚠️ 已触及 0 个：档案存在但没有任何推断分，"
                   "说明冷启动没真正生效。")
-            print("  · 先按 SKILL.md §0.7 联网检索该背景对应的知识体系，"
+            print("  · 先按 references/expansion.md §0.7 联网检索该背景对应的知识体系，"
                   "再跑 expand_profile.py 灌入")
             print("  · 或重跑 init_profile.py 补一次静态推断")
         return

@@ -255,8 +255,8 @@ def build_profile(user_id, edu, job, region, subjects=None, keywords=None):
           f"职业：{job_kw or '（无）'} → {len(job_hits)} 条；"
           f"区域：{reg_kw or '（无）'} → {len(region_hits)} 条")
     if not merged:
-        print("\n⚠️ 静态映射表零命中：背景推断为空，488 条骨架会全部是 0 分。")
-        print("   静态模板覆盖不了这个背景，请走 SKILL.md §0.7「联网扩展档案」：")
+        print("\n⚠️ 静态映射表零命中：背景推断为空，铺出来的骨架会全部是 0 分。")
+        print("   静态模板覆盖不了这个背景，请走 references/expansion.md §0.7「联网扩展档案」：")
         print("   联网检索该背景对应的知识体系，产出 inferences.json 后执行")
         print("   python3 scripts/expand_profile.py --user <id> --input inferences.json")
         print("   （也可用 --edu-kw/--job-kw/--region-kw 手工指定语义关键词重试）")
