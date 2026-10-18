@@ -47,7 +47,6 @@ import argparse
 import core
 
 SEED = {"strong": 50.0, "likely": 30.0, "possible": 20.0}
-CONF = {"strong": 0.7, "likely": 0.55, "possible": 0.4}
 
 TAG_SOURCE = "网络检索"
 
@@ -115,16 +114,14 @@ def find_existing(index, name):
 
 
 def write_evidence(udir, kp_id, strength, note, url):
-    ev_id = core.new_id("ev")
-    core.write_md(
-        os.path.join(udir, "evidence", f"{ev_id}.md"),
-        {"id": ev_id, "target_type": "point", "target_id": kp_id,
-         "type": "web_inferred", "weight": SEED[strength],
-         "confidence": CONF[strength], "direction": "positive",
-         "coefficient": "", "occurred_at": core.TODAY.isoformat(),
-         "source_ref": url or "", "note": note or ""},
-    )
-    return ev_id
+    """写一条联网种子证据（role=seed，权重=种子分）。
+
+    种子分是**直接赋值**而非边际累加，所以必须显式标 `role: seed` 且
+    置信度固定 1.0；否则同一知识点来两次「strong」会被叠成 75 分。
+    """
+    return core.write_seed_evidence(
+        udir, kp_id, SEED[strength], note=note or "",
+        source_ref=url or "", ev_type="web_inferred")
 
 
 def expand(user_id, input_path, dry_run=False, force=False):
@@ -184,8 +181,8 @@ def expand(user_id, input_path, dry_run=False, force=False):
                 "profile": str(p.get("profile") or (g or {}).get("profile")
                                or "foundation"),
                 "prior_exposure": "high",
-                "raw_score": seed, "current_score": seed, "peak_score": seed,
-                "status": core.judge_status(seed, seed, seed)[0],
+                "raw_score": 0.0, "current_score": 0.0, "peak_score": 0.0,
+                "status": "untouched",
                 "last_verified_at": core.TODAY.isoformat(),
                 "origin": "inferred", "rejected": False, "evidence_ids": [],
                 "tags": [strength, TAG_SOURCE],
@@ -194,14 +191,9 @@ def expand(user_id, input_path, dry_run=False, force=False):
                     f"> 依据：{reason or '—'}\n> 来源：{url or '—'}\n")
             path = core.point_path(os.path.join(udir, "points"), name, subject)
         else:
-            meta["raw_score"] = max(float(meta.get("raw_score", 0) or 0), seed)
-            meta["current_score"] = meta["raw_score"]
-            meta["peak_score"] = max(float(meta.get("peak_score", 0) or 0),
-                                     meta["raw_score"])
+            # 已有分数：种子**不覆盖**（种子只在 raw=0 时生效，见 weights.md）
             meta["last_verified_at"] = core.TODAY.isoformat()
             meta["origin"] = "inferred"
-            meta["status"] = core.judge_status(
-                meta["raw_score"], meta["raw_score"], meta["peak_score"])[0]
             tags = meta.get("tags") or []
             if isinstance(tags, str):
                 tags = [tags]
@@ -216,9 +208,17 @@ def expand(user_id, input_path, dry_run=False, force=False):
                               url)
         ev_ids = meta.get("evidence_ids") or []
         if isinstance(ev_ids, str):
-            ev_ids = []
+            ev_ids = [ev_ids] if ev_ids else []
         ev_ids.append(ev_id)
         meta["evidence_ids"] = ev_ids
+        # 分数一律由证据重算——不手搓，才能保证 stored raw 与证据对得上
+        raw, _miss = core.recompute_raw(ev_ids, udir)
+        peak = max(float(meta.get("peak_score", 0) or 0), raw)
+        current, _ = core.apply_decay(
+            raw, meta.get("last_verified_at"), meta.get("profile", "foundation"))
+        meta.update({"raw_score": round(raw, 1), "current_score": round(current, 1),
+                     "peak_score": round(peak, 1),
+                     "status": core.judge_status(raw, current, peak)[0]})
         core.write_md(path, meta, body)
         added_ev += 1
         (scored if how else created).append(f"{target}　{strength}")

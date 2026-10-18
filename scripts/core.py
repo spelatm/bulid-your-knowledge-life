@@ -433,3 +433,279 @@ def point_path(pdir, name, subject=""):
         if not os.path.exists(p2):
             return p2
     return unique_path(pdir, safe_name(name, subject))
+
+
+# ---------- 按 id / 名称取址（文件名已可读，不能再拼 id.md） ----------
+
+def _scan(directory, prefix):
+    """扫一个轨目录，返回 [(path, meta, body)]。"""
+    out = []
+    for path in sorted(glob.glob(os.path.join(directory, "*.md"))):
+        meta, body = read_md(path)
+        if meta.get("id"):
+            out.append((path, meta, body))
+    return out
+
+
+# 进程内索引缓存。为什么需要：一次 `--suggest` 里 add_edge 会对每一对边
+# 重新取址，逐条重扫全库是 O(边数 × 知识点数) 次读盘。
+# 失效条件是**目录 mtime + 文件数**——新增/改名/删除会变；
+# 只改内容不变。调用方若就地修改 meta（add_edge 就是这么做的），
+# 缓存里是同一批 dict，不会有陈旧问题。
+_INDEX_CACHE = {}
+
+
+def _sig(directory):
+    try:
+        return (os.stat(directory).st_mtime_ns, len(os.listdir(directory)))
+    except OSError:
+        return None
+
+
+def invalidate(udir=None):
+    """丢掉索引缓存。**写完内容后要调**——目录 mtime 只反映增删改名，
+
+    改内容（改分、改 related）不会让签名变化，同进程里再读就会拿到旧 meta。
+    跨进程调用不受影响（缓存不落盘）。
+    """
+    if udir is None:
+        _INDEX_CACHE.clear()
+        return
+    prefix = os.path.abspath(udir)
+    for k in [k for k in _INDEX_CACHE if k[0].startswith(prefix)]:
+        _INDEX_CACHE.pop(k, None)
+
+
+def _cached_index(udir, subdir, prefix):
+    directory = os.path.join(udir, subdir) if subdir else udir
+    key = (os.path.abspath(directory), prefix)
+    sig = _sig(directory)
+    hit = _INDEX_CACHE.get(key)
+    if hit and sig is not None and hit[0] == sig:
+        return hit[1]
+    items = _scan(directory, prefix)
+    by_id = {str(m["id"]): (p, m, b) for p, m, b in items}
+    by_name = {}
+    for p, m, b in items:
+        by_name.setdefault(str(m.get("name", "")), (p, m, b))
+    idx = {"by_id": by_id, "by_name": by_name, "items": items}
+    if sig is not None:
+        _INDEX_CACHE[key] = (sig, idx)
+    return idx
+
+
+def index_points(udir):
+    """建立 {id: (path, meta, body)} 与 {name: (path, meta, body)} 双索引。
+
+    自 3.4.0 起文件名 = 知识点名，`points/<id>.md` 已不存在。
+    脚本一律走本索引，不拼文件名——这也是「id 以 frontmatter 为准」的落点。
+    """
+    return _cached_index(udir, "points", "kp")
+
+
+def find_point(udir, key, index=None):
+    """按 id、名称或文件名主干取一条知识点。返回 (path, meta, body) 或 None。
+
+    文件主干也接受，是因为用户和 agent 都习惯顺手说文件名；
+    但匹配的仍然是 frontmatter 的 name，不是碰运气。
+
+    不传 `index` 时先走**单文件快路径**（文件名就是知识点名），
+    命中就只读一个文件——查一条不该等于全库扫描。
+    """
+    key = str(key or "").strip()
+    if not key:
+        return None
+    if index is None:
+        cand = os.path.join(udir, "points", safe_name(key) + ".md")
+        if os.path.exists(cand):
+            meta, body = read_md(cand)
+            if key in (str(meta.get("id")), str(meta.get("name"))):
+                return cand, meta, body
+    idx = index or index_points(udir)
+    if key in idx["by_id"]:
+        return idx["by_id"][key]
+    if key in idx["by_name"]:
+        return idx["by_name"][key]
+    stem = os.path.splitext(os.path.basename(key))[0]
+    for p, m, b in idx["items"]:
+        if os.path.splitext(os.path.basename(p))[0] == stem:
+            return p, m, b
+    return None
+
+
+# ---------- 横向边：正文托管块 ----------
+#
+# 本体在 frontmatter 的 `related: [名字]`；正文这块是**派生展示**，
+# 让 Obsidian 的图谱能看见边（frontmatter 的纯文本不会进图谱）。
+# 只有 link.py 写这块，其它脚本原样保留正文。
+
+REL_BEGIN = "<!-- related:start -->"
+REL_END = "<!-- related:end -->"
+_REL_PAT = re.compile(r"\n*" + re.escape(REL_BEGIN) + r".*?"
+                      + re.escape(REL_END) + r"\n*", re.S)
+
+
+def render_related(entries, title="关联"):
+    """entries: [(名字, 文件名主干, 备注)] → 托管块文本。"""
+    lines = [REL_BEGIN, "", f"## {title}", ""]
+    for name, stem, note in entries:
+        # 主干与名字不一致（撞名加过（学科）后缀）时用别名，链接才解析得到
+        link = f"[[{stem}]]" if stem == name else f"[[{stem}|{name}]]"
+        lines.append(f"- {link}" + (f"　{note}" if note else ""))
+    lines += ["", REL_END]
+    return "\n".join(lines)
+
+
+def set_related(body, entries, title="关联"):
+    """把托管块替换成 entries；entries 为空则整块移除。幂等。"""
+    body = _REL_PAT.sub("\n", body or "").rstrip("\n")
+    if not entries:
+        return body + "\n" if body else ""
+    return body + "\n\n" + render_related(entries, title) + "\n"
+
+
+# ---------- 技能簇（预设目录 skills/*.md） ----------
+#
+# 技能不按学科组织——「复盘方法」属于哪个学科没有答案，所以它不进 graph/。
+# 预设目录只给「能力簇 + 名称 + 种类」，`requires`（技能→知识点）留给
+# agent 在具体用户档案里连，避免凭空造边。
+
+KINDS = ("composite", "tacit")
+
+
+def load_skill_catalog():
+    """解析 skills/*.md，返回 [{cluster, name, kind}]。"""
+    out = []
+    for path in sorted(glob.glob(os.path.join(ROOT, "skills", "*.md"))):
+        fname = os.path.basename(path)[:-3]
+        if fname.upper() == "README":
+            continue
+        cluster = fname
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if s.startswith("# ") and not s.startswith("##"):
+                    cluster = s[2:].strip() or fname
+                elif s.startswith("- "):
+                    body = s[2:].strip()
+                    km = re.search(r"〔(\w+)〕", body)
+                    kind = km.group(1) if km else "composite"
+                    name = re.sub(r"〔[^〕]*〕", "", body).strip()
+                    name = re.sub(r"[⭐*]", "", name).split("（")[0].strip()
+                    if name:
+                        out.append({"cluster": cluster, "name": name,
+                                    "kind": kind})
+    return out
+
+
+def index_skills(udir):
+    """{id: (...)} / {name: (...)}，结构同 index_points。"""
+    return _cached_index(udir, os.path.join("experience", "skills"), "sk")
+
+
+def find_skill(udir, key, index=None):
+    key = str(key or "").strip()
+    if not key:
+        return None
+    if index is None:
+        cand = os.path.join(udir, "experience", "skills",
+                            safe_name(key) + ".md")
+        if os.path.exists(cand):
+            meta, body = read_md(cand)
+            if key in (str(meta.get("id")), str(meta.get("name"))):
+                return cand, meta, body
+    idx = index or index_skills(udir)
+    if key in idx["by_id"]:
+        return idx["by_id"][key]
+    if key in idx["by_name"]:
+        return idx["by_name"][key]
+    stem = os.path.splitext(os.path.basename(key))[0]
+    for p, m, b in idx["items"]:
+        if os.path.splitext(os.path.basename(p))[0] == stem:
+            return p, m, b
+    return None
+
+
+def recompute_raw(ev_ids, udir):
+    """按证据重算 raw（append-only 的对账函数）。
+
+    两种证据，语义不同，必须分开：
+
+    - **种子证据**（`role: seed`，冷启动 / 联网扩展）→ **直接赋值**，
+      且只在 raw=0 时生效；否则两个 50 分的种子会叠加成 75，凭空造分。
+    - **累加证据**（其余）→ 正向边际递减、负向乘系数，与 `ingest.py` 一致
+      （第 i 条用 i 作为递减基数）。
+
+    返回 (raw, 未找到的证据 id 列表)。
+    """
+    raw, missing = 0.0, []
+    for i, ev_id in enumerate(ev_ids, 1):
+        path = os.path.join(udir, "evidence", f"{ev_id}.md")
+        if not os.path.exists(path):
+            missing.append(ev_id)
+            continue
+        meta, _ = read_md(path)
+        t = str(meta.get("type", ""))
+        w = float(meta.get("weight", 0) or 0)
+        conf = float(meta.get("confidence", 0) or 0)
+        if is_seed(meta):
+            if raw <= 0:
+                raw = w
+        elif t in NEGATIVE_TYPES:
+            raw = raw * w
+        else:
+            raw = apply_evidence(raw, w, conf, i)
+    return max(0.0, min(100.0, raw)), missing
+
+
+SEED_WEIGHT_FLOOR = 20.0
+
+
+def is_seed(ev_meta):
+    """种子证据判定。
+
+    新记录直接看 `role: seed`；3.5.0 之前的记录没有这个字段——
+    按「推断类 + 权重 ≥20」识别（正常推断权重是个位数，见 weights.md），
+    迁移脚本会把这个推断落成显式字段。
+    """
+    if str(ev_meta.get("role", "")).strip() == "seed":
+        return True
+    return (str(ev_meta.get("type", "")) in ("inferred", "web_inferred")
+            and float(ev_meta.get("weight", 0) or 0) >= SEED_WEIGHT_FLOOR)
+
+
+def write_seed_evidence(udir, target_id, score, note="", source_ref="",
+                        occurred_at=None, ev_type="inferred",
+                        target_ids=None):
+    """写一条种子证据。`weight = 种子分`、`confidence = 1.0`、`role = seed`。
+
+    置信度固定 1.0 不是「很确信」，而是「种子分本身就是结论，不再打折」——
+    否则 stored raw 与「按证据重算」的结果对不上，审计链就断了。
+    """
+    ev_id = new_id("ev")
+    write_md(
+        os.path.join(udir, "evidence", f"{ev_id}.md"),
+        {"id": ev_id, "target_type": "point", "target_id": str(target_id),
+         "target_ids": target_ids or [str(target_id)],
+         "type": ev_type, "weight": round(float(score), 1), "confidence": 1.0,
+         "role": "seed", "direction": "positive", "coefficient": "",
+         "occurred_at": occurred_at or TODAY.isoformat(),
+         "source_ref": source_ref, "note": note},
+    )
+    return ev_id
+
+
+def sync_score(path, meta, body, udir):
+    """按证据重算 raw 并同步 current/peak/status/last_verified_at，然后落盘。"""
+    ev_ids = meta.get("evidence_ids") or []
+    if isinstance(ev_ids, str):
+        ev_ids = [ev_ids] if ev_ids else []
+    raw, _missing = recompute_raw(ev_ids, udir)
+    peak = max(float(meta.get("peak_score", 0) or 0), raw)
+    last = meta.get("last_verified_at") or None
+    current, _ = apply_decay(raw, last, str(meta.get("profile", "foundation")))
+    status, base = judge_status(raw, current, peak)
+    meta.update({"raw_score": round(raw, 1), "current_score": round(current, 1),
+                 "peak_score": round(peak, 1), "status": status})
+    write_md(path, meta, body)
+    return raw, current, status, base

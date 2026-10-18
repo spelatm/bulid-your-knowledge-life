@@ -292,8 +292,18 @@ def build_profile(user_id, edu, job, region, subjects=None, keywords=None):
         # → medium（这正是报告里「待验证」清单的来源）
         prior = ("high" if scored
                  else ("medium" if subject in picked_set else "minimal"))
+        path = core.point_path(os.path.join(udir, "points"), name, subject)
+        # 有推断分就必须有证据条（不变量 I2）：种子分**直接赋值**，
+        # 但同样要能由证据重算回来，否则审计链断在这
+        ev_ids = []
+        if scored:
+            ev_ids = [core.write_seed_evidence(
+                udir, pid, raw, source_ref="inference",
+                note=f"冷启动种子分（{strength}）"
+                     f"｜{source or source_of(name)}"
+                     + (f"｜{note}" if note else ""))]
         core.write_md(
-            core.point_path(os.path.join(udir, "points"), name, subject),
+            path,
             {"id": pid, "name": name, "subject": subject, "course": course,
              "domain": core.domain_of(subject, course),
              "transferable": core.facet_of(probe, "transferable"),
@@ -304,7 +314,7 @@ def build_profile(user_id, edu, job, region, subjects=None, keywords=None):
              "status": core.judge_status(raw, raw, raw)[0],
              "last_verified_at": core.TODAY.isoformat() if scored else "",
              "origin": "inferred" if scored else "preset",
-             "rejected": False, "evidence_ids": [],
+             "rejected": False, "evidence_ids": ev_ids,
              # 来源用**命中的推断名**去查，否则永远落到兜底值
              "tags": ([strength, source or source_of(name)] if scored else [])},
             body,
@@ -336,8 +346,16 @@ def build_profile(user_id, edu, job, region, subjects=None, keywords=None):
                 continue
             strength, key = hit
             raw = STRENGTH_SCORE[strength]
-            m.update({"raw_score": raw, "current_score": raw,
-                      "peak_score": raw, "last_verified_at": core.TODAY.isoformat(),
+            ev_id = core.write_seed_evidence(
+                udir, str(m["id"]), raw, source_ref="inference",
+                note=f"冷启动种子分（{strength}）｜{source_of(key)}")
+            ev = m.get("evidence_ids") or []
+            if isinstance(ev, str):
+                ev = [ev] if ev else []
+            ev.append(ev_id)
+            m.update({"evidence_ids": ev, "raw_score": raw,
+                      "current_score": raw, "peak_score": raw,
+                      "last_verified_at": core.TODAY.isoformat(),
                       "origin": "inferred",
                       "status": core.judge_status(raw, raw, raw)[0],
                       "tags": [strength, source_of(key)]})

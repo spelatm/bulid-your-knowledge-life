@@ -221,6 +221,35 @@ def recent_activity(pts, days=30):
                   reverse=True)[:10]
 
 
+def skill_rows(udir, pts):
+    """技能：熟练度、知识均分、gap。零熟练度的按簇折叠（原则 B）。"""
+    import skill as skill_mod
+    pidx = {"by_name": {str(p.get("name")): ("", p, "") for p in pts}}
+    idx = core.index_skills(udir)
+    live, folded = [], collections.defaultdict(list)
+    for _p, m, _b in idx["items"]:
+        lvl = float(m.get("level", 0) or 0)
+        row = {"name": m.get("name"), "cluster": m.get("cluster", "未分簇"),
+               "kind": m.get("kind"), "level": lvl}
+        row["gap"], row["mean"], row["missing"] = skill_mod.gap_of(udir, m, pidx)
+        row["verdict"] = skill_mod.verdict(row["gap"])
+        (live if lvl > 0 else folded[row["cluster"]]).append(row)
+    return live, folded
+
+
+def edge_stats(udir, pts):
+    """横向边统计：总数 + 跨域条数（跨域边才是这套系统的价值所在）。"""
+    pairs, dom = set(), {}
+    for p in pts:
+        for name in (p.get("related") or []):
+            pairs.add(tuple(sorted((str(p.get("name")), str(name)))))
+    for p in pts:
+        dom[str(p.get("name"))] = str(p.get("domain", "") or "")
+    cross = sum(1 for a, b in pairs
+                if dom.get(a) and dom.get(b) and dom.get(a) != dom.get(b))
+    return len(pairs), cross
+
+
 def build_report(user_id, pts, subject=None):
     """生成 Markdown 报告全文。"""
     L = []
@@ -379,6 +408,47 @@ def build_report(user_id, pts, subject=None):
                      f"　{core.LEVEL_LABEL.get(p['_base'], p['_base'])}")
     else:
         L.append("近 30 天没有新的验证记录。")
+    L.append("")
+
+    # 八、技能与错位
+    udir = core.user_dir(user_id)
+    live, folded = skill_rows(udir, pts)
+    n_edges, n_cross = edge_stats(udir, pts)
+    n_skill = len(live) + sum(len(v) for v in folded.values())
+    L.append("## 八、技能与错位")
+    L.append("")
+    L.append("> **知识分与技能分是两套独立计算**：知识分来自学习证据（读过、想过、"
+             "推过），技能分来自行为证据（写过、做过、教过别人），**互不推导**。")
+    L.append(">")
+    L.append("> `gap = 技能熟练度 − 支撑它的知识点均分`：")
+    L.append("> `+20` 以上＝手熟但原理淡了（该补原理）；`−20` 以下＝学过但没做过"
+             "（该给练习）。这正是简历答不出、又最该知道的那件事。")
+    L.append("")
+    if n_skill:
+        if live:
+            L.append("| 技能 | 簇 | 熟练度 | 知识均分 | gap | 判读 | 该做什么 |")
+            L.append("|---|---|---:|---:|---:|---|---|")
+            for r in sorted(live, key=lambda x: -(x["gap"] or 0)):
+                mean = "—" if r["mean"] is None else f"{r['mean']:.0f}"
+                gap = "—" if r["gap"] is None else f"{r['gap']:+.0f}"
+                L.append(f"| {r['name']} | {r['cluster']} | {r['level']:.0f} | "
+                         f"{mean} | {gap} | {r['verdict'][0]} | "
+                         f"{r['verdict'][1]} |")
+            L.append("")
+        if folded:
+            names = "、".join(f"「{c}」{len(v)} 个" for c, v in
+                             sorted(folded.items(), key=lambda kv: -len(kv[1])))
+            L.append(f"> 另有 **{sum(len(v) for v in folded.values())}** 个技能"
+                     f"尚无行为证据（熟练度 0，不占篇幅）：{names}")
+            L.append("> 技能分不会因为「你大概会」而给分——没有做过的记录，就是 0。")
+            L.append("")
+    else:
+        L.append("还没有技能实体。预置能力簇："
+                 "`python3 scripts/skill.py --user <id> --seed`")
+        L.append("")
+    L.append(f"**关联网络**：{n_edges} 条横向边"
+             f"（其中跨域 **{n_cross}** 条）。纵向边是学科给的，横向边是你自己长出来的；"
+             "跨域的那几条是这份档案里最难被替代的部分。")
     L.append("")
     L.append("---")
     L.append("")

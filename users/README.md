@@ -14,18 +14,23 @@ python3 scripts/init_profile.py --user <user_id> \
 ```
 users/<user_id>/
 ├─ profile.md              背景信息与画像摘要
+├─ edges.md                横向边登记簿（确认 / 拒绝记录）
 ├─ points/                 A 轨：知识点档案
 ├─ experience/
 │  ├─ projects/            B 轨：项目
 │  ├─ actions/             行动与流程
 │  ├─ artifacts/           产物
-│  └─ playbooks/           提炼出的行动预案
+│  ├─ playbooks/           提炼出的行动预案
+│  └─ skills/              技能实体（熟练度由行为证据推进）
 ├─ wisdom/                 C 轨：智慧原则
 ├─ features/               D 轨：行为特征
 ├─ questions/              E 轨：问题日志
 ├─ reports/                生成的知识分布报告
 └─ evidence/               证据流水（append-only）
 ```
+
+> 知识点文件名 = 知识点名。用 Obsidian 打开 `users/<id>/` 就能看到分布与关联，
+> 因为横向边写在正文的 `[[wikilink]]` 里。
 
 ## 测试用户
 

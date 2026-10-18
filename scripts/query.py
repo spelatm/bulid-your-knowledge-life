@@ -125,6 +125,36 @@ def load_features(udir):
     return sorted(feats, key=lambda m: -float(m.get("confidence", 0) or 0))
 
 
+def related_names(points):
+    """命中知识点的横向关联（去重、排除已命中的）。"""
+    hit = {str(m.get("name")) for _p, m in points}
+    out = []
+    for _p, m in points:
+        for r in (m.get("related") or []):
+            r = str(r)
+            if r not in hit and r not in out:
+                out.append(r)
+    return out
+
+
+def skills_for(udir, points, question):
+    """哪些技能用到了这些知识点，或技能名直接命中问题。
+
+    技能分是**行为证据**得出的，所以这里只报熟练度，不报"懂不懂"。
+    """
+    names = {str(m.get("name")) for _p, m in points}
+    out = []
+    for _p, m, _b in core.index_skills(udir)["items"]:
+        reqs = m.get("requires") or []
+        if isinstance(reqs, str):
+            reqs = [reqs]
+        sname = str(m.get("name", ""))
+        if (set(map(str, reqs)) & names) or (sname and sname in question):
+            out.append((sname, float(m.get("level", 0) or 0),
+                        str(m.get("cluster", ""))))
+    return sorted(out, key=lambda x: -x[1])[:5]
+
+
 def query(user_id, question):
     udir = core.user_dir(user_id)
     points = match_points(udir, question)
@@ -157,8 +187,23 @@ def query(user_id, question):
     for f in feats[:3]:
         print(f"   · {f.get('feature')}：{f.get('value')}")
 
-    print("\n④ 建议：回答后写入 questions/ 日志；"
-          "若暴露遗忘，记一条负向证据。")
+    rel = related_names(points)
+    print(f"\n④ 横向关联：{'命中 ' + str(len(rel)) + ' 条' if rel else '无'}")
+    for r in rel[:6]:
+        print(f"   · {r}")
+    if rel:
+        print("   （这些不是同学科的邻居，是你在自己的经历里连出来的）")
+
+    sks = skills_for(udir, points, question)
+    print(f"\n⑤ 相关技能：{'命中 ' + str(len(sks)) + ' 个' if sks else '无'}")
+    for name, level, cluster in sks:
+        print(f"   · {name}（{cluster}）熟练度 {level:.0f}"
+              "　—— 技能分只来自做过的事，不代表原理懂多少")
+
+    print("\n⑥ 建议：回答后写入 questions/ 日志；"
+          "若暴露遗忘，记一条负向证据。"
+          "\n   本次若同时点亮了多个知识点，用一条多目标证据录入（ingest --target A --target B），"
+          "\n   共现够了 link.py 会提出连边建议。")
 
 
 def main():

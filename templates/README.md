@@ -44,13 +44,17 @@ tags: []
 ---
 id: prj_
 name:
-role:                        # 主导 / 参与 / 协助
+role:                        # 主导 / 参与 / 观察
 started_at:
 ended_at:
-domain:
-capability_tags: []
-artifact_ids: []
-action_ids: []
+domains: []                  # 涉及哪些域（跨域边的原始信号）
+context: [专业]
+outcome:                     # 成功 / 部分 / 失败
+touched_points: []           # 点亮了哪些知识点（写名字，边②）
+skills: []                   # 动用了哪些技能（边③）
+playbooks: []
+blockers:                    # 卡在哪 —— 比"成功了"更有信息量
+artifacts: []
 ---
 
 ## 背景与目标
@@ -61,6 +65,31 @@ action_ids: []
 
 ## 用到/印证了哪些知识点
 ```
+
+---
+
+## 技能 `experience/skills/`
+
+```yaml
+---
+id: sk_
+name: 信息检索
+cluster: 信息处理            # 能力簇，不按学科组织
+kind: composite             # composite 可分解 / tacit 隐性手感
+requires: []                # 支撑它的知识点（写名字，边①）
+experience: []              # 在哪些项目里用过（边③）
+level: 0                    # 熟练度：只由行为证据推进，不从知识点分推导
+last_used_at:
+profile: durable            # 技能统一 730 天衰减
+evidence_ids: []
+---
+
+## 现在会到什么程度
+
+## 卡在哪
+```
+
+> 没有行为证据就是 `level: 0`。**「他应该会」不是证据。**
 
 ---
 
@@ -98,13 +127,19 @@ project_id: prj_
 
 ## Playbook `experience/playbooks/`
 
+模板见 `templates/playbooks.md`（7 个流程类）。落盘时 `derived_from` **必须**填，
+否则那只是通用建议，不是你的经验。
+
 ```yaml
 ---
 id: pb_
 name:
-applicable_when:             # 什么情况该调出来
-derived_from: []             # 来源项目 id
+applicable_when:             # 什么情况该调出来（情境索引键）
+derived_from: []             # 来源项目（写名字）
+steps: []
+anti_patterns: []            # 踩过的坑，经验里最有价值的部分
 related_points: []
+verified_count: 0
 confidence: 0.8
 ---
 
@@ -175,12 +210,14 @@ derived_evidence: []
 ```yaml
 ---
 id: ev_
-target_type: point          # point / wisdom / feature
+target_type: point          # point / skill / wisdom / feature
 target_id: kp_
+target_ids: []              # 全部目标：写多个 → 产生「共现」，横向边才有燃料
 type: project_lead          # 见 _meta/weights.md
 weight: 35
 confidence: 0.9
-direction: positive         # positive / negative
+role: ""                    # seed = 冷启动种子分（直接赋值，不累加）
+direction: positive         # positive / negative / neutral
 coefficient:                # 负向时填，如 0.85
 occurred_at:
 source_ref:                 # 关联的 prj_ / act_ / q_

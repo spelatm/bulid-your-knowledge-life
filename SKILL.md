@@ -249,8 +249,9 @@ users/<user_id>/
 ├─ points/             一个知识点一个 .md，**文件名 = 知识点名**（可读，见 ③）
 ├─ evidence/           append-only 证据，一条一个 .md
 ├─ questions/          问题日志
-├─ experience/projects|actions|artifacts|playbooks/
+├─ experience/projects|actions|artifacts|playbooks|skills/
 ├─ wisdom/  features/   （用到再建）
+├─ edges.md            横向边登记簿（只记决策：谁、何时、拒过哪对）
 └─ reports/             report --save 时才产生
 ```
 
@@ -316,12 +317,14 @@ tags: []                  # 可放强度标签，如 [strong, 网络检索]
 ```yaml
 ---
 id: ev_9f8e7d6c
-target_type: point        # point / wisdom / feature
-target_id: kp_a1b2c3d4
+target_type: point        # point / skill / wisdom / feature
+target_id: kp_a1b2c3d4    # 主目标（兼容旧脚本）
+target_ids: [kp_a1b2c3d4, kp_f9e8d7c6]   # 全部目标：**可点亮多个点**
 type: project_lead        # 见 §3.1 / §3.2
 weight: 35                # 正向取 w；负向可留空
 confidence: 0.9
-direction: positive       # positive / negative
+role: ""                  # seed = 冷启动种子分（直接赋值，不累加）
+direction: positive       # positive / negative / neutral
 coefficient:              # 负向时填，如 0.85
 occurred_at: 2026-10-15
 source_ref:               # 关联的 prj_ / act_ / q_，或联网来源 URL
@@ -331,6 +334,10 @@ note: 主导支付链路重构
 
 写完证据后，**回填** `points/<id>.md` 的 `evidence_ids`、`raw_score`、
 `current_score`、`peak_score`、`status`、`last_verified_at`——两处必须一致。
+
+> **`target_ids` 写多个值，是这条系统能长出新东西的唯一入口。**
+> 一条证据同时点亮 A 和 B，就是一次共现；共现够了才谈得上「这两条该连」。
+> 只写单值，档案永远只是一张平铺的表。
 
 **⑤ 算分（照 §3 的公式手工推算，别估算）**
 
@@ -349,6 +356,22 @@ note: 主导支付链路重构
 - **一次对话结束前批量落盘**，不要每说一句就写文件
 - 同一会话内**同一知识点只记一条证据**，合并成更完整的 note
 - 写文件失败 → 告知用户一次，继续正常回答，不要卡住
+
+**⑦ 横向边（手工版，对应 §6.6）**
+
+1. 扫 `evidence/`，看哪些证据的 `target_ids` 同时含两个知识点 → 记一次共现
+2. 同一对达到 3 次且**同域** → 可直接连；否则**先问用户**，一次最多问 3 对
+3. 连的方式：两边 `points/*.md` 的 `related: [名字]` 各加一条，
+   正文追加 `## 关联` 与 `- [[对方名字]]`（Obsidian 靠这个画边）
+4. 用户拒绝 → 记进 `edges.md`，**同一对不再建议**
+
+**⑧ 技能（手工版，对应 §6.7）**
+
+技能放 `experience/skills/`，**分数（`level`）只来自行为证据**（做过 / 教过别人 / 有产物），
+不从知识点分推导。字段：`name` / `cluster` / `kind`(composite|tacit) / `requires`(知识点名) /
+`experience`(项目名) / `level` / `last_used_at` / `profile: durable` / `evidence_ids`。
+
+`gap = level − requires 里知识点的 current 均值`：> +20 补原理，< −20 给练习。
 
 ---
 
@@ -372,6 +395,11 @@ note: 主导支付链路重构
 | 12 | 用户说"这条不对 / 标错了" | 标 `rejected: true`，不再参与计算 | §6.5 |
 | 13 | 用户**对系统本身**提改进建议 | **验证 → 确认 → 再改**，禁止直接改 | §8 |
 | 14 | 距上次 `decay.py` 超过 1 天 | 跑一次衰减，更新状态 | §3.3 |
+| 15 | 一次回答同时用到了多个知识点 | **一条多目标证据录入**（`--target A --target B`），共现才有燃料 | §6.1、§6.6 |
+| 16 | 回答结束、手里有 >0 组共现候选 | 跑 `link.py --suggest`，**最多报 3 对、每对带依据** | §6.6 |
+| 17 | 用户说"这两条有关系 / 这两个不是一回事" | `link.py --add` / `--reject`，拒绝的从此不再问 | §6.6 |
+| 18 | 用户说"我做过 X / 我会 X"（**做**，不是**学**） | 建/更新技能实体，按行为证据推进 `level` | §6.7 |
+| 19 | 技能与它要求的知识点对不上（gap 超 ±20） | 按 gap 方向调整讲法：补原理 / 给练习 | §6.7 |
 
 **优先级铁律**：第 13 项高于一切常规动作——用户要改系统时，
 先放下手上的录入和回答，走 §8 完整流程。
@@ -398,6 +426,18 @@ E 问题日志 Questions     我问过什么、卡在哪    ← 零成本自动�
 | D 行为画像 | 我是什么样的人 | 缓慢修正 | 决定表达方式 |
 | E 问题日志 | 我问过什么 | — | 知识缺口最诚实的探针 |
 
+**B 轨里有两个实体，别混**：
+
+| | 技能 `experience/skills/` | 经验 `experience/projects|playbooks/` |
+|---|---|---|
+| 回答 | 会不会做 | 做过什么、在什么情境下怎么做 |
+| 组织轴 | **能力簇** | **情境** |
+| 分数 | `level`（行为证据推进，730 天衰减） | 不评分，只记事实 |
+| 例子 | 「信息检索」熟练度 53 | 「论文复现：GNN 过度平滑」卡在谱图理论 |
+
+技能是**中转站**：向上连知识点（`requires`），向下连经验（`experience`）。
+它是系统里唯一同时连着两侧的节点——所以它不是衍生品，是枢纽。
+
 ### 目录
 
 ```
@@ -405,16 +445,24 @@ knowledge-profile/
 ├─ SKILL.md              本手册（唯一必需文件）
 ├─ CHANGELOG.md          系统变更记录（改进必写）
 ├─ _meta/                配置层：改这里，不改代码
-├─ graph/                预置学科骨架
+├─ graph/                预置学科骨架（**只装能被某门课教的东西**）
+├─ skills/               预置技能簇（按能力簇组织，**不按学科**）
 ├─ inference/            背景推断模板
-├─ templates/            各轨录入模板
+├─ templates/            各轨录入模板（含 playbooks.md 流程模板）
 ├─ scripts/              可执行脚本（模式 A 才有）
-├─ design/               设计草案（未实施；渐进披露的细节落点）
+├─ design/               设计草案与迁移记录（渐进披露的细节落点）
 ├─ archive/              仅存 git 无法表达的资产（用户数据快照等）
 └─ users/<user_id>/      每用户隔离
    ├─ profile.md
+   ├─ edges.md           横向边登记簿（决策与拒绝清单）
    └─ points|experience|wisdom|features|questions|reports|evidence
+      └ experience/skills/   技能实体（B 轨）
 ```
+
+**为什么 `skills/` 不在 `graph/` 里**：`graph/` 是**学科**骨架，第一条纪律是
+「装得进某门课」。技能装不进去——「复盘方法」属于哪个学科？没有答案。
+把它塞进学科的代价是整个骨架失去可比性（3.4.0 之前 `graph/职业技能.md`
+就是这么错的，3.5.0 拆掉，见 `design/职业技能分流-mapping.md`）。
 
 **三条硬约束**：
 - `evidence/` **append-only**。分数是算出来的，不是写死的，任何时刻可审计
@@ -446,6 +494,11 @@ raw_score += (100 - raw_score) × (w / 100) × confidence
 | `self_report` 用户自评 | 8 | 0.5 | 冷启动铺底 |
 | `inferred` 背景推断（未确认） | 5 | 0.4 | 覆盖广精度低，**不得污染真实分数** |
 | `web_inferred` 联网检索（未确认） | 6 | 0.5 | 同 inferred，须附来源 URL |
+| `edge_confirm` 关联确认 | **0** | 1.0 | 只留痕、不计分：连上两条 ≠ 你更懂了 |
+
+**种子证据是另一条路**（`role: seed`，冷启动与联网扩展用）：
+`raw = weight`、只在 `raw = 0` 时生效、置信度固定 1.0。种子分表见 `_meta/weights.md`。
+它与上面的累加证据**必须分开**——不分的话，两条 50 分种子会叠加成 75，凭空造分。
 
 **同一知识点证据超过 5 条后，新增权重按 `1/n` 递减**，防刷分。
 
@@ -472,6 +525,7 @@ current_score = raw_score × 0.5^(Δt / half_life)
 | `tooling` | 90 天 | 工具、框架、软件操作 |
 | `foundation` | 180 天 | 数理基础、核心概念 |
 | `methodology` | 365 天 | 方法论、思维模型 |
+| `durable` | 730 天 | **技能**（会生疏，不会忘掉「会」） |
 | `permanent` | ∞ | 母语、常识 |
 
 每日执行：`python3 scripts/decay.py --user <id> --apply`
@@ -656,6 +710,71 @@ python3 scripts/ingest.py --user <id> --target <kp_id> \
 用户说"这条不对/标错了" → 设 `rejected: true`，不参与计算、不出现在报告中。
 **不要删除文件**——保留记录便于日后追溯"为什么这条被排除"。
 
+### 6.6 横向边：知识点 ↔ 知识点
+
+纵向边（域 → 学科 → 课程 → 知识点）来自 `graph/`，是公共的；
+**横向边是个人的**，只能长在档案里。它记的是「这两件事你在同一个场景里用过」。
+
+```bash
+python3 scripts/link.py --user <id> --suggest        # 找候选（auto 档直接建）
+python3 scripts/link.py --user <id> --accept "A" "B" # 同意建议
+python3 scripts/link.py --user <id> --reject "A" "B" # 拒绝，此后不再建议
+python3 scripts/link.py --user <id> --add "A" "B"    # 用户主动声明
+python3 scripts/link.py --user <id> --list
+```
+
+三档，**不要越档**：
+
+| 档 | 条件 | 动作 |
+|---|---|---|
+| `auto` | 同域 **且** 共现 ≥3 次 | 直接建，可撤销 |
+| `suggest` | 跨域，或共现 1–2 次 | **先问用户**，同意才建 |
+| `manual` | 用户自己说的 | 直接建 |
+
+**建议必须带依据，且只在不打断主线时提**：
+
+> 你在「论文复现：GNN 过度平滑」里同时用到了『消息传递机制』和『谱图理论』，
+> 这条线要连上吗？（依据：共现 3 次，ev_a1、ev_b2）
+
+- 单次最多 3 对，一次能答完
+- 拒绝过的同一对**永不再问**（写进 `edges.md`）
+- 没有依据不许建议——否则你会开始随机连边
+
+落到文件上是三处，各有各的用处：本体在两端 `related: [名字]`（机器读）、
+正文 `## 关联` 里是 `[[名字]]`（Obsidian 画图）、`edges.md` 记决策（人查账）。
+建边同时写一条 `edge_confirm` 证据（**权重 0**）——确认相关不等于更懂了。
+
+### 6.7 技能实体：会不会做
+
+```bash
+python3 scripts/skill.py --user <id> --seed                  # 铺预置技能簇（level 一律 0）
+python3 scripts/skill.py --user <id> --requires "信息检索" --points "信息检索,资料筛选与判别"
+python3 scripts/skill.py --user <id> --add "论文复现" --cluster 学术研究 --kind composite
+python3 scripts/skill.py --user <id> --list                  # 含 gap
+python3 scripts/ingest.py --user <id> --skill --target "信息检索" --type project_lead
+```
+
+**两套分数，永不互相推导**：
+
+| | 来源证据 | 字段 | 回答 |
+|---|---|---|---|
+| 知识点 | `study` / `teaching` / `artifact` | `raw_score` | 懂不懂 |
+| 技能 | `project_lead` / `artifact` / `selftest_pass` | `level` | 会不会 |
+
+```
+gap = level(技能) − mean(current_score(该技能 requires 的知识点))
+```
+
+| gap | 含义 | 你该做什么 |
+|---|---|---|
+| **> +20** | 手熟，原理淡了（凭手感） | 补原理、给推导 |
+| **−20 ~ +20** | 知行相当 | 正常讲 |
+| **< −20** | 学过，没实践过（纸上谈兵） | 给练习、少讲理论 |
+
+**为什么值得单独算**：任何简历只能回答「你做过什么」，回答不了
+「你手上会的，和你脑子里懂的，是否一致」——而这个错位恰好决定该补课还是该练手。
+`requires` 为空的 `tacit` 技能不出 gap，**这是正常状态，不是缺数据**。
+
 ---
 
 ## 7. 生成报告
@@ -666,10 +785,10 @@ python3 scripts/report.py --user <id> --save         # 落盘 users/<id>/reports
 python3 scripts/report.py --user <id> --subject 数学   # 单学科
 ```
 
-七节：总体概览 / 域分布（广度 × 深度）/ 掌握度分层 / 正在生疏 / 盲区提示 /
-待验证与待确认 / 近期动态。
+八节：总体概览 / 域分布（广度 × 深度）/ 掌握度分层 / 正在生疏 / 盲区提示 /
+待验证与待确认 / 近期动态 / **技能与错位**。
 
-三个刻意设计（**回答用户时也要守住**）：
+刻意设计（**回答用户时也要守住**）：
 - **全库均值与已触及均值并列**：全库均值把未触及项计入分母会显得很低，
   两个都给，避免用户误读为"我很差"
 - **盲区按「你已有积累的学科」优先排序**：数学的核心知识点没学，
@@ -678,6 +797,10 @@ python3 scripts/report.py --user <id> --subject 数学   # 单学科
   但展示时必须折叠，否则报告会被一排 0% 淹没（原则 B）
 - **先验与实测视觉分离**：`prior_exposure` 推出的「待验证清单」
   必须标注为**猜测**，绝不能与 `raw_score` 混在一张表里
+- **没有行为证据的技能折在簇里**：23 个技能全列出来是一面 0 分的墙，
+  但它们确实存在。折叠成「人际沟通 8 个」比删掉或全列表都好
+- **gap 只说方向，不判人**：说「这个技能你手熟但原理淡了」，
+  不说「你的理解很浅」
 
 ---
 
@@ -823,13 +946,20 @@ python3 scripts/report.py --user __test__
 | 脚本 | 职责 | 模式 B 替代 |
 |---|---|---|
 | `bootstrap.py` | **入口**。检查档案状态，输出你的下一步动作 | 手工读 `profile.md`（§0.8） |
-| `init_profile.py` | 冷启动：背景 → 推断 → 铺骨架 → 建档 | 手工建 `profile.md` + 推断项 |
+| `init_profile.py` | 冷启动：背景 → 推断 → 铺骨架 → 建档（每个推断分都带一条 `role: seed` 证据） | 手工建 `profile.md` + 推断项 |
 | `expand_profile.py` | **联网扩展**：把检索出的知识点灌进档案并写证据（§0.7） | 手工建 points + evidence |
-| `ingest.py` | 录入证据并重算分数（含负向证据与 `--verify`） | 手工按 §3 公式重算 |
+| `ingest.py` | 录入证据并重算分数（支持**多目标**、技能目标、负向证据与 `--verify`） | 手工按 §3 公式重算 |
 | `decay.py` | 每日衰减，更新状态与遗忘清单 | 手工按 §3.3 推算 |
-| `query.py` | 提问时查询：知识点状态 + Playbook + 画像 | 手工检索 `points/*.md` 的 name/tags |
-| `report.py` | 生成知识分布报告（域折叠 + 广度×深度 + 待验证清单） | 手工按 §7 七节聚合 |
-| `migrate_s1.py` | **档案迁移**：可读命名 + 字段统一 + 清理旧字段。**幂等、不动分数** | 手工改名与补字段 |
+| `query.py` | 提问时查询：知识点状态 + 横向关联 + 相关技能 + Playbook + 画像 | 手工检索 `points/*.md` 的 name/tags |
+| `report.py` | 生成知识分布报告（域折叠 + 广度×深度 + 待验证清单 + 技能错位） | 手工按 §7 八节聚合 |
+| `link.py` | **横向边**：共现检测、三档建议、建边/拒边、登记簿 | 手工扫证据共现（§0.8 ⑦） |
+| `skill.py` | **技能实体**：播种/新建/连 requires/gap、项目与 Playbook | 手工建 `skills/*.md`（§0.8 ⑧） |
+| `migrate_s1.py` | 档案迁移（3.4.0）：可读命名 + 字段统一 + 清理旧字段。**幂等、不动分数** | 手工改名与补字段 |
+| `migrate_s2.py` | 3.5.0 迁移：证据 `target_ids` 多值化 + 种子 `role` 显式化 + 补录无证据的分 + 重名合并 | — |
+| `migrate_s3.py` | 3.5.0 迁移：`职业技能` 49 条改归属（**只改元数据，分数零变化**）+ 播种技能簇 | — |
+
+> 三个 `migrate_*` 都是一次性迁移，但**都幂等**——重跑只会输出「0 条」。
+> 它们保留在仓库里，是为了让别的用户也能升级自己的旧档案。
 
 ### 10.2 知识点字段
 
@@ -850,11 +980,26 @@ python3 scripts/report.py --user __test__
 | transferable | ⬜ | 切面：可迁移性 0–1，`>=0.7` 即「通用与跨域方法」视图 |
 | context | ⬜ | 切面：适用语境（专业 / 生活） |
 | prior_exposure | ⬜ | 先验接触概率 high/medium/low/minimal，**永不参与算分** |
+| related | ⬜ | 横向边：相关知识点**名字**（正文 `## 关联` 由它派生） |
 
-> 末三行的字段都是**启发值**：决定「怎么展示、先问什么」，不决定「你有多强」。
-> 取值规则全部在 `_meta/domains.md`——改数值不改代码。
+> 末四行的字段都是**启发值或关系**：决定「怎么展示、先问什么、连到哪儿」，
+> 不决定「你有多强」。取值规则全部在 `_meta/domains.md`——改数值不改代码。
 
 完整字段定义见 `_meta/schema.md`，录入模板见 `templates/README.md`。
+
+### 10.2b 技能实体字段 `experience/skills/`
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| id / name | ✅ | 标识 |
+| cluster | ✅ | 能力簇（人际沟通 / 信息处理 / 工具与平台 / 职业素养 / 自建） |
+| kind | ✅ | `composite` 可分解 / `tacit` 隐性手感（`tacit` 的 `requires` 可空） |
+| requires | ⬜ | 支撑它的知识点**名字**（边① 技能→知识） |
+| experience | ⬜ | 在哪些项目里用过（边③ 技能→经验） |
+| level | ✅ | 熟练度 0–100，**只由行为证据推进** |
+| last_used_at | ⬜ | 最后使用时间（`durable` 档衰减起点） |
+| profile | ✅ | 固定 `durable`（730 天） |
+| evidence_ids | ✅ | 支撑熟练度的证据 |
 
 ### 10.3 配置改动速查
 
@@ -863,7 +1008,10 @@ python3 scripts/report.py --user __test__
 | 各类证据的权重 | `_meta/weights.md` | §3.1 |
 | 半衰期与学科档位 | `_meta/decay_profiles.md` | §3.3 |
 | 等级区间与展示口径 | `_meta/levels.md` | §3.4 |
-| 预置学科骨架 | `graph/*.md` | §4 |
+| 预置学科骨架（**只装能被课教的**） | `graph/*.md` | §4 |
+| 预置技能簇（按能力簇，不按学科） | `skills/*.md` | §6.7 |
+| 流程类 Playbook 模板 | `templates/playbooks.md` | §6.2 |
+| 域 / 切面 / 先验的匹配规则 | `_meta/domains.md` | §10.2 |
 | 背景推断规则 | `inference/*.md` | §4 |
 
 ### 10.4 最小可用版
@@ -885,8 +1033,11 @@ C/D/E 三轨与 Playbook 可在使用中逐步启用。
 **每次会话结束前**：
 
 - [ ] 本次触及的知识点，证据写了吗（同一知识点只写一条）？
+- [ ] 一次回答用到多个知识点时，是否用了**一条多目标证据**（共现才有燃料）？
 - [ ] 有新增的推断项吗？告知用户了吗？
 - [ ] 有暴露遗忘吗？记负向证据了吗（且用中性表述）？
+- [ ] 有共现候选吗？提了建议吗（≤3 对、带依据）？用户拒的记进 `edges.md` 了吗？
+- [ ] 用户说了"做过 X"吗？技能分是按行为证据走的，还是又拿知识点分凑的？
 - [ ] 有需要走 §8 的系统改动建议吗？
 
 ### 10.6 反面清单（明确禁止的行为）
@@ -904,3 +1055,9 @@ C/D/E 三轨与 Playbook 可在使用中逐步启用。
 - ❌ **接到系统改进建议就动手改** —— 必须走 §8 五步（违反 I4）
 - ❌ **用评判性措辞描述用户水平** —— "你很弱 / 你忘了"（违反 I5）
 - ❌ **为了这套系统拖慢回答** —— 查询/写入失败不阻塞回答（§5 节流规则）
+- ❌ **没有依据就建议连边** —— 「感觉这两个相关」不是依据；依据必须是共现次数 + 触发的证据/项目
+- ❌ **把技能分和知识点分互相换算** —— 一换算 `gap` 恒为 0，这个指标就废了
+- ❌ **给没做过的技能打分** —— 「他应该会」不是证据；技能分从 0 起
+- ❌ **单次建议超过 3 对，或拒绝后还问同一对** —— 那是骚扰，不是能力
+- ❌ **手改 `## 关联` 托管块** —— 它由 `related` 派生，下次同步会被覆盖
+- ❌ **往 `graph/` 里塞装不进任何课的东西**（技能、思维方式、流程）—— 这就是 3.4.0 之前那个类别错误
