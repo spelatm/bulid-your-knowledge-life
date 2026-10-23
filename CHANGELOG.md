@@ -17,6 +17,41 @@
 
 ---
 
+## [3.7.1] 2026-10-23
+
+- **改动**：三处「空态不可辨认」的修补。
+  1. `skills/README.md` 的 `experience_ids` 改为 `experience`——技能实体连经验用的是
+     项目名而不是 id，`_meta/schema.md` 技能段一直是 `experience: [项目名]`
+  2. `init_profile.py` 建档时写一份空登记簿 `edges.md`（带表头，零条边），
+     复用一个 `link.save_edges(udir, {})`，不复制表头文本
+  3. `init_profile.py` 建档时写 `experience/README.md`：五个子目录各收什么、
+     第一条怎么录。同时把 `experience/skills` 补进建档时创建的目录列表
+     （之前靠 `skill.py --seed` 顺手建，没播种的用户就没有这个目录）
+
+- **层级**：L3 脚本（`init_profile.py`）+ L1 文档（`skills/README.md`）
+
+- **原因**：用户打开 `users/default/` 时看到「`edges.md` 不存在、`experience/` 五个子目录
+  全空」，无法判断是**还没开始**还是**文件丢了**。空目录和不存在的文件都自证不了任何事，
+  而这两处恰好是「B 轨一次都没真正用过」的现场。
+
+- **影响**：
+  - **零分数变化**。只新增两个空壳文件，`points/` 一条未动
+  - 已存在的档案不会被覆盖（两处都做了 `os.path.exists` 判断），重复跑 `init_profile` 安全
+  - `users/default` 已手工补上这两份文件（`edges.md`、`experience/README.md`）
+
+- **回滚**：`git revert <本提交>`。回滚后两处空壳不再生成，不影响任何已有数据
+
+- **验证**：
+  1. `__test__` 空档案建档 → `edges.md` 生成、`experience/README.md` 生成、`experience/skills` 存在
+  2. `link.load_edges()` 读空表返回 `{}`（表头行被 `cells[0] == "A"` 跳过）；
+     建一条真实边后 `--list` 正常显示「共 1 条横向边」
+  3. `skill.py --seed` 在新建档案上播种 23 个技能，无报错
+  4. `default` 零漂移：500 点 / `raw` 合计 4110.0 / 已触及 94 / 均值 43.7；
+     `bootstrap --check` → `ready`
+  5. `default` 重复执行建档补文件那段，第二次输出「已存在」，不重写
+
+---
+
 ## [3.7.0] 2026-10-19
 
 - **改动**：全文档改写为「智能体扫描为主、用户查阅为辅」的写法。

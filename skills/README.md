@@ -9,7 +9,8 @@
 > 经验 know-when  experience/     按情境          不衰减    「做过」
 > ```
 >
-> 技能是**中转站**：向上连知识点（`requires`），向下连经验（`experience_ids`）。
+> 技能是**中转站**：向上连知识点（`requires`），向下连经验（`experience`，
+> 存项目名而不是 id——字段定义见 `_meta/schema.md` 技能段）。
 
 ---
 

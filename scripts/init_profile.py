@@ -12,6 +12,36 @@ import argparse
 import datetime
 import collections
 import core
+import link
+
+# 建档时写进 `users/<id>/experience/README.md`。五个子目录空着是常态
+# （要有真实经历才写得进来），但空目录本身不解释任何事，用户只会以为文件丢了。
+EXPERIENCE_README = """# 经验（B 轨）
+
+技能回答「会不会做」，这一轨回答「在什么情况下做成的」。
+
+五个子目录**空着是常态**——它们要有真实经历才写得进来，不是初始化失败。
+
+| 子目录 | 收什么 |
+|---|---|
+| `projects/` | 一个做过的项目：目标、你的角色、结果、**卡在哪** |
+| `actions/` | 项目里一个可复用的动作（拆分依赖、灰度切流、对账补偿） |
+| `artifacts/` | 产出物：仓库、文档、上线记录、文章 |
+| `playbooks/` | 一类事的流程：先干什么后干什么、哪里容易翻车 |
+| `skills/` | 技能的熟练度（`skill.py --seed` 播种，靠行为证据涨） |
+
+字段模板见仓库的 `templates/README.md`（项目/行动/产出）与
+`templates/playbooks.md`（流程）；技能字段见 `_meta/schema.md` 的技能段。
+
+## 第一条怎么录
+
+说一件最近**真做过**的事，不用是大事。让 agent 按 `projects/` 的模板写一条，
+再把这次用到的知识点用 `ingest.py --target A --target B` 记成一条证据——
+项目、技能、知识点三头就接上了。
+
+> 这一轨**不衰减**：做过的事不会因为时间久了就没做过。
+> 会变旧的只是「最近一次用到」的时间（`last_used_at`）。
+"""
 
 # 推断强度 → raw 初值
 STRENGTH_SCORE = {"strong": 50.0, "likely": 30.0, "possible": 20.0}
@@ -206,8 +236,16 @@ def build_profile(user_id, edu, job, region, subjects=None, keywords=None):
     udir = core.user_dir(user_id)
     for sub in ("points", "experience/projects", "experience/actions",
                 "experience/artifacts", "experience/playbooks",
-                "wisdom", "features", "questions", "evidence"):
+                "experience/skills", "wisdom", "features", "questions", "evidence"):
         os.makedirs(os.path.join(udir, sub), exist_ok=True)
+
+    # 空登记簿与说明先落地：让「还没有」和「文件丢了」在目录里长得不一样。
+    if not os.path.exists(os.path.join(udir, link.REGISTRY)):
+        link.save_edges(udir, {})
+    exp_readme = os.path.join(udir, "experience", "README.md")
+    if not os.path.exists(exp_readme):
+        with open(exp_readme, "w", encoding="utf-8") as f:
+            f.write(EXPERIENCE_README)
 
     # 采集背景（与已有档案合并，不覆盖 created_at）
     ppath = os.path.join(udir, "profile.md")
