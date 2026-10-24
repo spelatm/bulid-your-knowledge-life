@@ -7,8 +7,10 @@
 import os
 import re
 import glob
+import math
 import argparse
 import core
+import link
 
 # 讲解深度建议
 ADVICE = {
@@ -21,31 +23,71 @@ ADVICE = {
 }
 
 
-CJK = re.compile(r"[\u4e00-\u9fff]")
+# 名字里的连接词：切开之后每一块都能单独去问句里找
+SPLIT_RE = re.compile(r"[与和及的、，,/／|｜·：:；;]+")
+BRACKET_RE = re.compile(r"[（(][^）)]*[）)]")     # 括号里是别称/说明，不参与计分
+NORM_RE = re.compile(r"[^0-9a-z\u4e00-\u9fff]+")
+
+PARTIAL = 0.35   # 词块只中一部分时给的分：挡住「数据解读」靠「数据」压过「索引与 B+ 树」
 
 
-def tokens(s):
-    """中文取 2-gram，英文/数字按词切分。
+def _norm(s):
+    """只留中英文数字，去掉空格与标点——问句和名字用同一套口径比。"""
+    return NORM_RE.sub("", str(s).lower())
 
-    中文没有空格，"性能优化" 无法靠 split 匹配到 "渲染性能怎么优化"，
-    必须切 2-gram：性能 / 能优 / 优化 → 其中两个出现在问句里即可命中。
+
+def _parts(name):
+    """把名字切成能独立命中的词块；括号里的别称不重复计分。"""
+    base = BRACKET_RE.sub(" ", str(name))
+    return [p for p in (_norm(x) for x in SPLIT_RE.split(base)) if len(p) >= 2]
+
+
+def _lcs(a, b):
+    """最长公共子串长度。名字都短，直接 DP，不做花活。"""
+    if not a or not b:
+        return 0
+    prev = [0] * (len(b) + 1)
+    best = 0
+    for i in range(1, len(a) + 1):
+        cur = [0] * (len(b) + 1)
+        for j in range(1, len(b) + 1):
+            if a[i - 1] == b[j - 1]:
+                cur[j] = prev[j - 1] + 1
+                if cur[j] > best:
+                    best = cur[j]
+        prev = cur
+    return best
+
+
+def score(name, question):
+    """知识点名与问句的匹配度 0–1。
+
+    为什么不用「2-gram 重合数 ÷ 名字长度」：那个算法**单方面惩罚长名字**。
+    问「定积分怎么算」时，「不定积分」3 个 gram 中 2 个命中得 0.67，
+    而正确答案「定积分与微积分基本定理」9 个 gram 中同样 2 个命中只得 0.22——
+    名字越长越吃亏，等于越准确的条目排名越靠后。
+
+    现在的做法是把名字切成**可独立命中的词块**（按「与/和/、/」等切开），
+    整块出现在问句里才算满命中；只中一部分按比例给分，且打折。
+    连接词不参与计分，所以「索引与 B+ 树」不会因为多了个「与」而被稀释。
     """
-    s = s.lower()
-    cjk = "".join(CJK.findall(s))
-    words = [w for w in re.split(r"[^a-z0-9\u4e00-\u9fff]+", s) if len(w) >= 2]
-    grams = [cjk[i:i + 2] for i in range(len(cjk) - 1)]
-    return set(grams) | set(words)
-
-
-def score(name, q_tokens):
-    """知识点名与问句的重叠度 0–1。返回连续值，便于排序取 Top N。"""
-    t = tokens(name)
-    if not t:
+    nq = _norm(question)
+    parts = _parts(name)
+    if not parts or not nq:
         return 0.0
-    return len(t & q_tokens) / len(t)
+    num = den = 0.0
+    for p in parts:
+        w = math.sqrt(len(p))          # 长词块更有辨识度，但不按长度线性放大
+        den += w
+        if p in nq:
+            num += w
+        else:
+            num += w * PARTIAL * (_lcs(p, nq) / len(p))
+    return num / den if den else 0.0
 
 
 STRONG = 0.4   # 名称强命中阈值
+WEAK = 0.2     # 弱命中：只在强命中为空时才用
 
 
 def match_points(udir, question):
@@ -54,25 +96,21 @@ def match_points(udir, question):
     宁可少给也不要乱给：课程兜底只返回与问句确实有重叠的知识点，
     避免问「数据库索引」时把整个数据库课程都端上来。
     """
-    qt = tokens(question)
     strong, weak, by_course = [], [], {}
-    for path in glob.glob(os.path.join(udir, "points", "*.md")):
-        meta, _ = core.read_md(path)
+    # 走索引而不是逐条 read_md：500 条就是 500 次 open，本机 12 秒；
+    # 索引有落盘缓存，热起来只要 0.1 秒
+    for path, meta, _body in core.index_points(udir)["items"]:
         if meta.get("rejected"):
             continue
         name = str(meta.get("name", ""))
         if not name:
             continue
-        t = tokens(name)
-        if not t:
-            continue
-        overlap = len(t & qt)
-        s = overlap / len(t)
+        s = score(name, question)
         if s >= STRONG:
             strong.append((path, meta, s))
-        elif overlap >= 2:
-            # 弱命中要求**至少重合两个 token**：中文 2-gram 下，
-            # 只重合一个词会闹笑话——问「消息传递」把「消息队列」端上来
+        elif s >= WEAK:
+            # 弱命中：词块只中了一部分（问「消息传递」时「消息队列」落到这里，
+            # 不会挤掉强命中，但强命中为空时还能给个方向）
             weak.append((path, meta, s))
         if float(meta.get("raw_score", 0) or 0) > 0:
             by_course.setdefault(str(meta.get("course", "")), []).append(
@@ -92,7 +130,7 @@ def match_points(udir, question):
     # 课程兜底：只取与问句有重叠的知识点，没有退化为该课程已掌握的 Top3
     out = []
     for course, items in by_course.items():
-        if not course or score(course, qt) <= 0:
+        if not course or score(course, question) < WEAK:
             continue
         ranked = sorted(items, key=rank)
         picked = [x for x in ranked if x[2] > 0][:3] or ranked[:3]
@@ -173,8 +211,10 @@ def query(user_id, question):
             label = core.LEVEL_LABEL.get(base, base)
             tag = "（已生疏）" if status == "rusty" else ""
             via = "　[经课程命中]" if meta.get("_via_course") else ""
+            seen = str(meta.get("last_verified_at") or "").strip()
+            when = f"上次接触 {seen}" if seen else "尚无接触记录"
             print(f"   · {meta.get('name')}：{label}{tag} "
-                  f"current={cur:.0f} 上次接触 {meta.get('last_verified_at')}{via}")
+                  f"current={cur:.0f} {when}{via}")
             print(f"     → {ADVICE[status]}")
 
     pbs = match_playbooks(udir, question)
@@ -187,20 +227,29 @@ def query(user_id, question):
     for f in feats[:3]:
         print(f"   · {f.get('feature')}：{f.get('value')}")
 
+    # 前置：讲某条之前先看它依赖什么，未触及就先补，别硬讲
+    pre_lines = []
+    for _p, m in points:
+        pre_lines += link.format_prereq(udir, str(m.get("name")))
+    # 无论如何都打这一行：打印是给人看的，编号缺一段会让人以为漏了内容
+    print(f"\n④ 前置：{'无（这些条目没有登记前置）' if not pre_lines else ''}")
+    for ln in pre_lines:
+        print("   " + ln if not ln.startswith("   ") else ln)
+
     rel = related_names(points)
-    print(f"\n④ 横向关联：{'命中 ' + str(len(rel)) + ' 条' if rel else '无'}")
+    print(f"\n⑤ 横向关联：{'命中 ' + str(len(rel)) + ' 条' if rel else '无'}")
     for r in rel[:6]:
         print(f"   · {r}")
     if rel:
         print("   （这些不是同学科的邻居，是你在自己的经历里连出来的）")
 
     sks = skills_for(udir, points, question)
-    print(f"\n⑤ 相关技能：{'命中 ' + str(len(sks)) + ' 个' if sks else '无'}")
+    print(f"\n⑥ 相关技能：{'命中 ' + str(len(sks)) + ' 个' if sks else '无'}")
     for name, level, cluster in sks:
         print(f"   · {name}（{cluster}）熟练度 {level:.0f}"
               "　—— 技能分只来自做过的事，不代表原理懂多少")
 
-    print("\n⑥ 建议：回答后写入 questions/ 日志；"
+    print("\n⑦ 建议：回答后写入 questions/ 日志；"
           "若暴露遗忘，记一条负向证据。"
           "\n   本次若同时点亮了多个知识点，用一条多目标证据录入（ingest --target A --target B），"
           "\n   共现够了 link.py 会提出连边建议。")

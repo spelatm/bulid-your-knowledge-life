@@ -8,6 +8,7 @@ users/*/wisdom/
 users/*/features/
 users/*/questions/
 users/*/reports/
+users/*/.cache/
 .workbuddy/
 
 # ---- 本地备份与快照 ----

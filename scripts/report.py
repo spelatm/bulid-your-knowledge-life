@@ -16,6 +16,7 @@ import argparse
 import datetime
 import collections
 import core
+import link
 
 # 重要度：核心 1.0 / 一般 0.6 / 边缘 0.3
 IMPORTANCE_DEFAULT = 0.6
@@ -43,14 +44,19 @@ def importance_of(meta):
 
 
 def load_points(udir, subject=None):
-    """读取全部有效知识点，顺带完成衰减重算（不写回）。"""
+    """读取全部有效知识点，顺带完成衰减重算（不写回）。
+
+    走索引（带落盘缓存）：500 条逐个 open 要二十几秒，看一份报告不该等这么久。
+    `meta` 必须**复制**再加 `_` 前缀的临时字段——索引里的 dict 是进程内共享的，
+    就地改会污染缓存，甚至被别的脚本连 `_raw` 一起写回 frontmatter。
+    """
     pts = []
-    for path in glob.glob(os.path.join(udir, "points", "*.md")):
-        meta, body = core.read_md(path)
-        if meta.get("rejected"):
+    for path, m, _body in core.index_points(udir)["items"]:
+        if m.get("rejected"):
             continue
-        if subject and str(meta.get("subject", "")) != subject:
+        if subject and str(m.get("subject", "")) != subject:
             continue
+        meta = dict(m)
         raw = float(meta.get("raw_score", 0) or 0)
         profile = meta.get("profile", "foundation")
         last = meta.get("last_verified_at")
@@ -313,12 +319,12 @@ def build_report(user_id, pts, subject=None):
         # 否则会读成比实际更多的域
         names = "".join(f"「{r['domain']}」" for r in empty)
         total = sum(r["n"] for r in empty)
-        L.append(f"> **另有 {len(empty)} 个域尚无任何记录**（共 {total} 个知识点，"
-                 f"骨架已铺、随时可记）：")
+        L.append(f"> **另有 {len(empty)} 个域还没碰过**（共 {total} 个知识点已铺开，"
+                 f"只是都还是 0 分）：")
         L.append(f"> {names}")
         L.append("")
-        L.append("> 它们不是「没收录」，而是「你还没在那儿留下痕迹」——"
-                 "这正是骨架全铺的意义：位置一直都在。")
+        L.append("> 它们不是「没收录」，而是「你还没在那儿留下痕迹」。"
+                 "位置一直都在——这正是骨架先铺满的意义。")
         L.append("")
 
     # 三、掌握度分层
@@ -446,6 +452,45 @@ def build_report(user_id, pts, subject=None):
         L.append("还没有技能实体。预置能力簇："
                  "`python3 scripts/skill.py --user <id> --seed`")
         L.append("")
+    # 九、前置与可疑
+    sus, inf, broken, cyc = link.audit_prereq(udir)
+    L.append("## 九、前置与可疑")
+    L.append("")
+    L.append("> **前置**不是「相关」，是「不先会 A 就讲不动 B」。它只用于两件事："
+             "决定讲解顺序、以及标出可疑条目。")
+    L.append(">")
+    L.append("> **可疑** = 这条有分，但它依赖的前置是 0 分。可能是标错了，"
+             "也可能是上游是「自以为会」——比泛泛的待验证清单更有指向。")
+    L.append(">")
+    L.append("> 这里按**分的来源**分两档：有实测证据的才算「可疑」；"
+             "只有冷启动推断分的只算「待验证」——推断本来就不可靠，"
+             "拿它报警会天天误报。")
+    L.append("")
+    if sus:
+        L.append("| 可疑条目（有实测证据） | 分数 | 前置（未触及） |")
+        L.append("|---|---:|---|")
+        for n, p_, r in sus[:10]:
+            L.append(f"| {n} | {r:.0f} | {p_} |")
+        L.append("")
+    else:
+        L.append("没有实测可疑条目（有分的都有前置，或前置也已有分）。")
+        L.append("")
+    if inf:
+        L.append(f"> 另有 **{len(inf)} 条推断分待验证**（分数来自冷启动推断，前置还没碰过）："
+                 + "、".join(f"{n}←{p_}" for n, p_, _ in inf[:6])
+                 + ("…" if len(inf) > 6 else ""))
+        L.append(">")
+        L.append("> 处置：不用问用户，重跑一次 `init_profile.py` 补推断即可；"
+                 "推断分本来就不该当「会」。")
+        L.append("")
+    if broken:
+        L.append(f"> 断链 {len(broken)} 条（前置名在档案里不存在）："
+                 + "、".join(f"{a} ← {b}" for a, b in broken[:5]))
+        L.append("")
+    if cyc:
+        L.append(f"> ⚠️ 成环 {len(cyc)} 条：{'、'.join(cyc[:5])}——"
+                 "前置必须是 DAG，请用 `link.py --unprereq` 拆掉一条。")
+        L.append("")
     L.append(f"**关联网络**：{n_edges} 条横向边"
              f"（其中跨域 **{n_cross}** 条）。纵向边是学科给的，横向边是你自己长出来的；"
              "跨域的那几条是这份档案里最难被替代的部分。")
@@ -476,7 +521,7 @@ def print_console(user_id, pts):
               f"({r['touched']}/{r['n']})")
     hidden = [r for r in domain_stats(pts) if r["touched"] == 0]
     if hidden:
-        print(f"  （另有 {len(hidden)} 个域尚无记录："
+        print(f"  （另有 {len(hidden)} 个域还没碰过："
               f"{'、'.join('「' + r['domain'] + '」' for r in hidden)}）")
     print()
     print("掌握度分层：")

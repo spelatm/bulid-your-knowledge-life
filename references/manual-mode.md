@@ -25,6 +25,7 @@ users/<user_id>/
 ├─ experience/         projects/ actions/ artifacts/ playbooks/ skills/
 ├─ wisdom/  features/  （用到再建）
 ├─ edges.md            横向边决策簿：谁、何时、拒过哪对
+├─ .cache/             脚本的索引缓存（派生数据，可以删；手工模式用不到）
 └─ reports/            只有跑报告并保存时才产生
 ```
 
@@ -169,7 +170,7 @@ knowledge-profile/
 ├─ references/           子文档：按会话阶段拆，用到才读（索引在 SKILL.md）
 ├─ CHANGELOG.md          系统变更记录（改进必写）
 ├─ _meta/                配置层：改这里，不改代码
-├─ graph/                预置学科骨架（只装能被某门课教的东西）
+├─ graph/                预置知识骨架（门类/学科/课程 三层目录，课程是索引文件）
 ├─ skills/               预置技能簇（按能力组织，不按学科）
 ├─ inference/            背景推断模板
 ├─ templates/            各类录入模板（含 playbooks.md 流程模板）

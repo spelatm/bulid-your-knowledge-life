@@ -6,6 +6,7 @@
 import os
 import re
 import glob
+import json
 import math
 import hashlib
 import datetime
@@ -44,11 +45,27 @@ def _load_pairs(path):
 NEGATIVE_TYPES = ("forgot", "selftest_fail", "rusty_asked")
 
 
+# 配置缓存。为什么要缓存：`apply_decay` 每条知识点都会调 `load_half_life()`，
+# 而在这个运行环境里**每一次 open 都有固定开销（约 23ms）**——500 条就是 11 秒。
+# 配置在一次进程里不会变，读一次就够。改 `_meta/` 后重开进程即生效。
+_CFG = {}
+
+
+def _cached(key, loader):
+    if key not in _CFG:
+        _CFG[key] = loader()
+    return _CFG[key]
+
+
 def load_weights():
     """返回 {证据类型: (权重或系数, 默认置信度)}。
 
     正向取「权重」列，置信度取第三列；负向取「系数」列。
     """
+    return _cached("weights", _load_weights_raw)
+
+
+def _load_weights_raw():
     out, confs = {}, {}
     path = os.path.join(ROOT, "_meta", "weights.md")
     if os.path.exists(path):
@@ -84,6 +101,10 @@ def load_weights():
 
 def load_half_life():
     """返回 {档位: 半衰期天数}"""
+    return _cached("half_life", _load_half_life_raw)
+
+
+def _load_half_life_raw():
     hl = {"volatile": 45.0, "tooling": 90.0, "foundation": 180.0,
           "methodology": 365.0, "permanent": float("inf")}
     path = os.path.join(ROOT, "_meta", "decay_profiles.md")
@@ -199,14 +220,68 @@ def write_md(path, meta, body=""):
         f.write("\n".join(lines) + "\n\n" + body.lstrip("\n"))
 
 
-def parse_graph(subjects=None):
-    """解析 graph/ 下的学科骨架，返回知识点列表。
+def _parse_entries(text, category, subject, course, default_profile, subjects):
+    """解析课程索引里的 `- 条目` 行。新旧两种骨架共用这一段。"""
+    out = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s.startswith("- ") or "→" in s:
+            continue
+        if subjects and subject not in subjects:
+            continue
+        body = s[2:].strip()
+        pm = re.search(r"〔(\w+)〕", body)
+        profile = pm.group(1) if pm else default_profile
+        stars = body.count("⭐") or body.count("*")
+        # 前置：`← A、B`（与 `→ 见 X` 的引用标记对称），写在「需要前置」的那条上
+        pw = re.search(r"←\s*([^⭐〔（(]+)", body)
+        prereq = ([x.strip() for x in re.split(r"[、,，]", pw.group(1))]
+                  if pw else [])
+        name = re.sub(r"[⭐*]", "",
+                      re.split(r"[（(〔←]", body)[0]).strip()
+        if not name:
+            continue
+        am = re.search(r"[（(](?:又称|别名)[：:]?\s*([^）)]+)[）)]", body)
+        aliases = ([x.strip() for x in re.split(r"[、,，]", am.group(1))]
+                   if am else [])
+        out.append({
+            "category": category, "subject": subject, "course": course,
+            "name": name, "profile": profile, "aliases": aliases,
+            "prerequisite": [x for x in prereq if x],
+            "importance": 1.0 if stars >= 2 else (0.6 if stars == 1 else 0.3),
+        })
+    return out
 
-    每项：{subject, course, name, importance, profile}
+
+def parse_graph(subjects=None):
+    """解析 graph/ 骨架，返回知识点列表。
+
+    两种布局都认：
+
+      · **三层树**（3.8.0 起，推荐）：`graph/<门类>/<学科>/<课程>.md`，
+        门类/学科/课程取自文件 frontmatter，路径只负责阅读
+      · **扁平文件**（旧部署）：`graph/<学科>.md`，`#` 学科 / `##` 课程
+
+    每项：{category, subject, course, name, importance, profile, aliases}
     重要性：⭐⭐=1.0（核心）/ ⭐=0.6（一般）/ 无星=0.3（边缘）
     """
     gdir = os.path.join(ROOT, "graph")
-    out = []
+    deep = sorted(glob.glob(os.path.join(gdir, "*", "*", "*.md")))
+
+    if deep:                                  # 三层树
+        out = []
+        for path in deep:
+            rel = os.path.relpath(path, gdir).split(os.sep)
+            meta, body = read_md(path)
+            category = str(meta.get("category") or rel[0])
+            subject = str(meta.get("subject") or rel[1])
+            course = str(meta.get("course") or rel[2][:-3])
+            prof = str(meta.get("profile") or "foundation")
+            out.extend(_parse_entries(body, category, subject, course, prof,
+                                      subjects))
+        return out
+
+    out = []                                  # 扁平文件（向后兼容）
     subject, course, default_profile = "", "", "foundation"
     for path in sorted(glob.glob(os.path.join(gdir, "*.md"))):
         fname = os.path.basename(path)[:-3]
@@ -226,26 +301,11 @@ def parse_graph(subjects=None):
                     course = s[3:].strip()
                 elif s.startswith("### "):
                     course = s[4:].strip()
-                elif s.startswith("- ") and "→" not in s:
+                elif s.startswith("- "):
                     if subjects and subject not in subjects:
                         continue
-                    body = s[2:].strip()
-                    pm = re.search(r"〔(\w+)〕", body)
-                    profile = pm.group(1) if pm else default_profile
-                    stars = body.count("⭐") or body.count("*")
-                    name = re.sub(r"[⭐*]", "",
-                                  re.split(r"[（(〔]", body)[0]).strip()
-                    if not name:
-                        continue
-                    # 别名：让推断模板的命名也能命中骨架
-                    am = re.search(r"[（(](?:又称|别名)[：:]?\s*([^）)]+)[）)]", body)
-                    aliases = ([x.strip() for x in re.split(r"[、,，]", am.group(1))]
-                               if am else [])
-                    out.append({
-                        "subject": subject, "course": course, "name": name,
-                        "profile": profile, "aliases": aliases,
-                        "importance": 1.0 if stars >= 2 else (0.6 if stars == 1 else 0.3),
-                    })
+                    out.extend(_parse_entries(
+                        s, "", subject, course, default_profile, subjects))
     return out
 
 
@@ -447,6 +507,72 @@ def _scan(directory, prefix):
     return out
 
 
+# 落盘索引缓存。为什么需要：本机一次 open+read ≈ 24ms，500 条知识点就是 12 秒，
+# 而 `query.py` 每次提问都要读全库——用户等不起，这也不是「检索性能高」该有的样子。
+# 逐文件比对 (mtime_ns, size) 只花 stat 的时间（500 个约 0 秒），
+# 只重读真正变化的文件，其余直接复用缓存里的 meta。
+# 缓存是**派生数据**：删掉它只会让下一次慢一点，不会丢任何信息。
+DISK_CACHE_VER = 1
+
+
+def _cache_file(udir, prefix, subdir):
+    slug = re.sub(r"[^0-9A-Za-z]+", "_", subdir or "root")
+    return os.path.join(udir, ".cache", f"{prefix}-{slug}.json")
+
+
+def _read_disk_cache(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("v") == DISK_CACHE_VER and isinstance(data.get("files"), dict):
+            return data["files"]
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
+def _scan_cached(directory, prefix, cache_path):
+    """按 mtime+size 复用上次解析结果，只重读变过的文件。"""
+    old = _read_disk_cache(cache_path)
+    try:
+        names = sorted(n for n in os.listdir(directory) if n.endswith(".md"))
+    except OSError:
+        return []
+    out, fresh, dirty = [], {}, False
+    for name in names:
+        path = os.path.join(directory, name)
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        hit = old.get(name)
+        if (hit and hit.get("mtime_ns") == st.st_mtime_ns
+                and hit.get("size") == st.st_size):
+            meta, body = hit.get("meta") or {}, hit.get("body") or ""
+        else:
+            try:
+                meta, body = read_md(path)
+            except (OSError, UnicodeDecodeError):
+                continue
+            dirty = True
+        if not meta.get("id"):
+            continue
+        fresh[name] = {"mtime_ns": st.st_mtime_ns, "size": st.st_size,
+                       "meta": meta, "body": body}
+        out.append((path, meta, body))
+    if dirty or set(fresh) != set(old):
+        try:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            tmp = cache_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"v": DISK_CACHE_VER, "files": fresh}, f,
+                          ensure_ascii=False, default=str)
+            os.replace(tmp, cache_path)
+        except OSError:
+            pass          # 缓存写不进去不影响正确性，只是下次还慢
+    return out
+
+
 # 进程内索引缓存。为什么需要：一次 `--suggest` 里 add_edge 会对每一对边
 # 重新取址，逐条重扫全库是 O(边数 × 知识点数) 次读盘。
 # 失效条件是**目录 mtime + 文件数**——新增/改名/删除会变；
@@ -483,7 +609,7 @@ def _cached_index(udir, subdir, prefix):
     hit = _INDEX_CACHE.get(key)
     if hit and sig is not None and hit[0] == sig:
         return hit[1]
-    items = _scan(directory, prefix)
+    items = _scan_cached(directory, prefix, _cache_file(udir, prefix, subdir))
     by_id = {str(m["id"]): (p, m, b) for p, m, b in items}
     by_name = {}
     for p, m, b in items:

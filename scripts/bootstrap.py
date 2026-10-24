@@ -49,16 +49,25 @@ def detect_state(user_id):
 
 
 def count_points(user_id):
-    d = os.path.join(core.user_dir(user_id), "points")
-    if not os.path.isdir(d):
-        return 0, 0
+    """返回 (知识点总数, 已触及数, 最近一次接触日期)。
+
+    走索引而不是 glob+read_md：500 条文件逐个 open 要十几秒，
+    而索引有落盘缓存，热起来 0.1 秒。日期取「档案真正动过」的那天，
+    不是 profile.md 的 updated_at——后者在录入证据时并不会变。
+    """
+    udir = core.user_dir(user_id)
+    if not os.path.isdir(os.path.join(udir, "points")):
+        return 0, 0, ""
     n = touched = 0
-    for path in glob.glob(os.path.join(d, "*.md")):
-        m, _ = core.read_md(path)
+    latest = ""
+    for _p, m, _b in core.index_points(udir)["items"]:
         n += 1
         if float(m.get("raw_score", 0) or 0) > 0:
             touched += 1
-    return n, touched
+        seen = str(m.get("last_verified_at") or "").strip()
+        if seen > latest:
+            latest = seen
+    return n, touched, latest
 
 
 def ask_script(missing):
@@ -78,7 +87,7 @@ def ask_script(missing):
 
 def check(user_id, as_json=False):
     state, meta, missing = detect_state(user_id)
-    n, touched = count_points(user_id)
+    n, touched, latest = count_points(user_id)
 
     if as_json:
         print(json.dumps({
@@ -94,7 +103,7 @@ def check(user_id, as_json=False):
 
     if state == ONBOARD_READY:
         print(f"\n档案已就绪：{n} 个知识点，其中 {touched} 个已触及。")
-        last = meta.get("updated_at") or meta.get("created_at") or "未知"
+        last = max(str(meta.get("updated_at") or ""), latest) or "未知"
         print(f"上次更新：{last}")
         print("\n【下一步】直接进入正常流程，不要再问背景信息。")
         print("  · 用户提问 → python3 scripts/query.py --user %s --q \"...\"" % user_id)

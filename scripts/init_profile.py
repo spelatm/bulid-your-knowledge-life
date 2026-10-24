@@ -314,6 +314,9 @@ def build_profile(user_id, edu, job, region, subjects=None, keywords=None):
 
 
 
+    # 门类与前置：来自骨架，save 时查表填进 frontmatter
+    CAT_OF, PREREQ = {}, {}
+
     def save(name, subject, course, importance, profile, strength,
              note="", source=""):
         pid = core.new_id("kp")
@@ -342,7 +345,9 @@ def build_profile(user_id, edu, job, region, subjects=None, keywords=None):
                      + (f"｜{note}" if note else ""))]
         core.write_md(
             path,
-            {"id": pid, "name": name, "subject": subject, "course": course,
+            {"id": pid, "name": name, "category": CAT_OF.get(subject, ""),
+             "subject": subject, "course": course,
+             "prerequisite": PREREQ.get(name, []),
              "domain": core.domain_of(subject, course),
              "transferable": core.facet_of(probe, "transferable"),
              "context": core.facet_of(probe, "context"),
@@ -361,6 +366,10 @@ def build_profile(user_id, edu, job, region, subjects=None, keywords=None):
     # 别名表：骨架名 → 别名。补充分支也要能用，否则补跑时别名匹配失效
     graph = core.parse_graph()
     alias_map = {g["name"]: g.get("aliases", []) for g in graph}
+    for g in graph:
+        CAT_OF[g["subject"]] = g.get("category", "")
+        if g.get("prerequisite"):
+            PREREQ[g["name"]] = g["prerequisite"]
 
     if has_points:
         # 补充模式：档案已存在，只给「未触及」的知识点赋推断分，

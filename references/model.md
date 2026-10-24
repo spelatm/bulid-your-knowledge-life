@@ -164,7 +164,7 @@
 | 证据权重与置信度 | `_meta/weights.md` | §3.1 |
 | 半衰期与学科档位 | `_meta/decay_profiles.md` | §3.3 |
 | 等级区间与展示口径 | `_meta/levels.md` | §3.4 |
-| 预置学科骨架（**只装能被课教的**） | `graph/*.md` | `onboarding.md` §4 |
+| 预置知识骨架（**只装能被课教的**） | `graph/<门类>/<学科>/<课程>.md` | `onboarding.md` §4 |
 | 预置技能簇（按能力组织，不按学科） | `skills/*.md` | `recording.md` §6.7 |
 | 流程类 Playbook 模板 | `templates/playbooks.md` | `recording.md` §6.2 |
 | 域 / 切面 / 先验的匹配规则 | `_meta/domains.md` | §10.2 |

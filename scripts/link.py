@@ -296,6 +296,150 @@ def list_edges(udir):
     return "\n".join(out)
 
 
+# ---------- 前置边（prerequisite） ----------
+#
+# 与横向边不同：前置是**有方向的、必须无环的**，用途不是联想而是
+# 「讲解顺序」与「可疑标记」。所以它不走 edges.md 登记簿（那是共现决策的记录），
+# 也不用正文 wikilink（那不是联想），只写 frontmatter `prerequisite: [名字]`。
+
+def _by_name(udir):
+    return core.index_points(udir)["by_name"]
+
+
+def prereq_of(udir, name, index=None):
+    """返回某个知识点的前置名字列表（不存在的条目返回空）。"""
+    hit = (index or _by_name(udir)).get(str(name))
+    if not hit:
+        return []
+    return [str(x) for x in (hit[1].get("prerequisite") or [])]
+
+
+def _all_prereqs(udir):
+    """全库前置图：{名字: [前置名字]}。"""
+    out = {}
+    for name, (_p, m, _b) in _by_name(udir).items():
+        pre = [str(x) for x in (m.get("prerequisite") or [])]
+        if pre:
+            out[name] = pre
+    return out
+
+
+def _reachable(graph, start, goal, seen=None):
+    """从 start 顺着前置往上走，能否到达 goal。"""
+    seen = seen or set()
+    if start == goal:
+        return True
+    if start in seen:
+        return False
+    seen.add(start)
+    return any(_reachable(graph, nxt, goal, seen)
+               for nxt in graph.get(start, []))
+
+
+def set_prereq(udir, target, need, add=True):
+    """`target` 需要 `need` 作为前置。加边前检查环；成环直接拒绝。"""
+    idx = _by_name(udir)
+    if str(target) not in idx:
+        return f"未找到知识点：{target}"
+    if str(need) not in idx:
+        return f"未找到知识点：{need}"
+    graph = _all_prereqs(udir)
+    if add and _reachable(graph, str(need), str(target)):
+        return (f"拒绝：{need} 已经（直接或间接）依赖 {target}，"
+                f"再加这条会成环——前置必须是 DAG")
+    path, meta, body = idx[str(target)]
+    cur = [str(x) for x in (meta.get("prerequisite") or [])]
+    if add:
+        if str(need) in cur:
+            return f"{target} 的前置里已经有 {need}"
+        cur.append(str(need))
+    else:
+        if str(need) not in cur:
+            return f"{target} 的前置里没有 {need}"
+        cur.remove(str(need))
+    meta["prerequisite"] = cur
+    core.write_md(path, meta, body)
+    core.invalidate(udir)
+    verb = "加上" if add else "去掉"
+    return f"已{verb}前置：{target} ← {need}"
+
+
+def _only_inferred(udir, meta):
+    """这条知识点的分是不是**只来自冷启动推断**（没有一条实测证据）。
+
+    为什么要分这一层：推断分的置信度天然低，拿它判「你懂下游却不懂上游」
+    会天天报警。真正值得警觉的是**有实测证据**却缺前置。
+    """
+    ids = meta.get("evidence_ids") or []
+    if isinstance(ids, str):
+        ids = [ids] if ids else []
+    if not ids:
+        return False                # 没证据却有分才是异常，交给别的检查
+    for eid in ids:
+        path = os.path.join(udir, "evidence", f"{eid}.md")
+        try:
+            em, _ = core.read_md(path)
+        except OSError:
+            return False
+        if str(em.get("type", "")) not in ("inferred", "web_inferred"):
+            return False            # 有一条实测证据，就算「真的声称会」
+    return True
+
+
+def audit_prereq(udir):
+    """返回 (实测可疑, 推断待验证, 断链, 环)。
+
+    可疑 = 这条有分（raw>0）但它的前置还是 0 分——学会了下游却没碰上游，
+    要么标错了，要么上游是「自以为会」。这是比「待验证」更有指向的信号。
+
+    再按**分的来源**拆两档：有实测证据的进「实测可疑」，纯冷启动推断的
+    进「推断待验证」。两者都该看，但处置不同——前者问用户，后者补一次推断即可。
+    """
+    idx = _by_name(udir)
+    suspicious, inferred, broken, cycles = [], [], [], []
+    graph = _all_prereqs(udir)
+    for name, pre in graph.items():
+        hit = idx.get(name)
+        if not hit:
+            continue
+        meta = hit[1]
+        raw = float(meta.get("raw_score", 0) or 0)
+        if raw <= 0:
+            continue
+        only_inf = _only_inferred(udir, meta)
+        for p in pre:
+            ph = idx.get(p)
+            if not ph:
+                broken.append((name, p))
+                continue
+            if float(ph[1].get("raw_score", 0) or 0) > 0:
+                continue
+            (inferred if only_inf else suspicious).append((name, p, raw))
+    # 成环判定不能拿「自己是否可达自己」做起点——那必然为真。
+    # 正确的问法是：它的某个前置，顺着前置往上走能不能回到它。
+    for name, pre in graph.items():
+        if any(_reachable(graph, p, name) for p in pre):
+            cycles.append(name)
+    return suspicious, inferred, broken, sorted(set(cycles))
+
+
+def format_prereq(udir, name):
+    """给 query 用：这一条的前置分别是什么状态。"""
+    idx = _by_name(udir)
+    pre = prereq_of(udir, name, idx)
+    if not pre:
+        return []
+    out = [f"前置（{len(pre)} 条）："]
+    for p in pre:
+        hit = idx.get(p)
+        if not hit:
+            out.append(f"   · {p}　（档案里没有这条）")
+        else:
+            raw = float(hit[1].get("raw_score", 0) or 0)
+            out.append(f"   · {p}　{'已触及' if raw > 0 else '**未触及**'}")
+    return out
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--user", required=True)
@@ -305,6 +449,10 @@ def main():
     p.add_argument("--add", nargs=2, metavar=("A", "B"))
     p.add_argument("--remove", nargs=2, metavar=("A", "B"))
     p.add_argument("--list", action="store_true")
+    p.add_argument("--prereq", nargs=2, metavar=("A", "B"),
+                   help="A 需要 B 作为前置")
+    p.add_argument("--unprereq", nargs=2, metavar=("A", "B"))
+    p.add_argument("--prereq-audit", action="store_true")
     a = p.parse_args()
     udir = core.user_dir(a.user)
     if not os.path.isdir(udir):
@@ -327,8 +475,25 @@ def main():
         print(remove_edge(udir, a.remove[0], a.remove[1], reason="removed"))
     elif a.list:
         print(list_edges(udir))
+    elif a.prereq:
+        print(set_prereq(udir, a.prereq[0], a.prereq[1], add=True))
+    elif a.unprereq:
+        print(set_prereq(udir, a.unprereq[0], a.unprereq[1], add=False))
+    elif a.prereq_audit:
+        sus, inf, broken, cyc = audit_prereq(udir)
+        print(f"前置可疑 {len(sus)} 条（有实测证据）｜推断待验证 {len(inf)} 条"
+              f"｜断链 {len(broken)} 条｜成环 {len(cyc)} 条")
+        for n, p, r in sus[:20]:
+            print(f"  · {n}（{r:.0f} 分）的前置 {p} 还是 0 分")
+        for n, p, r in inf[:10]:
+            print(f"  · （推断分）{n}（{r:.0f} 分）的前置 {p} 还没碰过")
+        for n, p in broken[:10]:
+            print(f"  · 断链：{n} ← {p}（档案里没有这条）")
+        for n in cyc[:10]:
+            print(f"  · 成环：{n}")
     else:
-        p.error("需要一个动作：--suggest / --accept / --reject / --add / --remove / --list")
+        p.error("需要一个动作：--suggest / --accept / --reject / --add / --remove / "
+            "--list / --prereq / --unprereq / --prereq-audit")
     return 0
 
 
