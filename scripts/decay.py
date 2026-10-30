@@ -36,6 +36,10 @@ def run(user_id, apply_changes=False):
             if (abs(float(meta.get("current_score", -1) or -1) - new_cur) > 0.05
                     or str(meta.get("status")) != status):
                 meta.update({"current_score": new_cur, "status": status})
+                try:
+                    body = core.refresh_body(udir, meta, body)
+                except Exception:
+                    pass
                 core.write_md(path, meta, body)
                 updated += 1
 

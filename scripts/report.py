@@ -51,7 +51,7 @@ def load_points(udir, subject=None):
     就地改会污染缓存，甚至被别的脚本连 `_raw` 一起写回 frontmatter。
     """
     pts = []
-    for path, m, _body in core.index_points(udir)["items"]:
+    for path, m, body in core.index_points(udir)["items"]:
         if m.get("rejected"):
             continue
         if subject and str(m.get("subject", "")) != subject:
@@ -75,6 +75,8 @@ def load_points(udir, subject=None):
             "_domain": str(meta.get("domain") or "") or UNCLASSIFIED,
             "_prior": str(meta.get("prior_exposure") or "minimal"),
             "_path": path,
+            # 内容完整度用：有没有写「详解」。放在这里算一次，别在报告里重复读文件
+            "_has_detail": bool(core.get_section(body, "详解").strip()),
         })
         pts.append(meta)
     return pts
@@ -291,6 +293,10 @@ def build_report(user_id, pts, subject=None):
              f"　（全库含未触及：**{overall:.0f}**）")
     L.append(f"- 正在生疏 **{sum(1 for p in pts if p['_status']=='rusty')}** 个"
              f"　｜　待确认的推断分 **{n_uc}** 条（见第六节）")
+    n_detail = sum(1 for p in pts if p.get("_has_detail"))
+    L.append(f"- 页面内容：**{n_detail}** 条写了详解"
+             f"（{n_detail/len(pts)*100:.0f}%），其余 {len(pts)-n_detail} 条只有结构"
+             "　—— 补内容的命令见 `references/recording.md` §6.8")
     L.append("")
     L.append("> 全库均值把未触及项计入分母，会显著偏低；"
              "看真实水平请参照「已触及部分」。")

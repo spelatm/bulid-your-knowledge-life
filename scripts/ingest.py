@@ -80,6 +80,10 @@ def ingest(user_id, targets, ev_type, confidence=None, note="", source_ref="",
             else:
                 raw, _miss = core.recompute_raw(ev_ids, udir)
                 meta["level"] = round(raw, 1)
+            try:
+                body = core.refresh_body(udir, meta, body)
+            except Exception:
+                pass
             core.write_md(path, meta, body)
             out.append(f"{meta.get('name', keys[0])}：熟练度 "
                        f"{float(meta['level']):.1f}")
@@ -99,6 +103,9 @@ def ingest(user_id, targets, ev_type, confidence=None, note="", source_ref="",
         meta.update({"raw_score": round(raw, 1),
                      "current_score": round(current, 1),
                      "peak_score": round(peak, 1), "status": status})
+        # 分数变了就重算页面里的「我的掌握 / 我的经历」——不重算的话，
+        # 页面上写的还是旧数字，读的人不知道该信哪个
+        body = core.refresh_body(udir, meta, body)
         core.write_md(path, meta, body)
         label = core.LEVEL_LABEL.get(base, base)
         rusty = "（已生疏）" if status == "rusty" else ""

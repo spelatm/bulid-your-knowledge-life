@@ -193,7 +193,10 @@ def add_edge(udir, name_a, name_b, origin="user", ev_ids=None, quiet=False):
             rel.append(other)
         meta["related"] = sorted(rel)
         entries = _render_side(udir, meta, registry, idx)
-        core.write_md(path, meta, core.set_related(body, entries))
+        body = core.set_related(body, entries)
+        # 概要索引要跟上新出现的「关联」章节
+        body = core.refresh_body(udir, meta, body)
+        core.write_md(path, meta, body)
     if not quiet:
         return f"已建立关联：{na} ↔ {nb}（来源 {origin}，共现 {n} 次）"
     return ""
@@ -210,10 +213,13 @@ def remove_edge(udir, name_a, name_b, reason="user"):
                               "evs": "", "at": core.TODAY.isoformat()}
     save_edges(udir, registry)
     for hit, other in ((a, nb), (b, na)):
-        rel = [str(x) for x in (hit[1].get("related") or []) if str(x) != other]
-        hit[1]["related"] = rel
-        entries = _render_side(udir, hit[1], registry, idx)
-        core.write_md(hit[0], hit[1], core.set_related(hit[2], entries))
+        path, meta, body = hit
+        meta["related"] = [str(x) for x in (meta.get("related") or [])
+                           if str(x) != other]
+        entries = _render_side(udir, meta, registry, idx)
+        body = core.set_related(body, entries)
+        body = core.refresh_body(udir, meta, body)
+        core.write_md(path, meta, body)
     return f"已撤销关联：{na} ↔ {nb}（{reason}）"
 
 

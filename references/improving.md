@@ -127,6 +127,8 @@ python3 scripts/report.py --user __test__
 | `report.py` | 知识分布报告：域折叠、广度×深度、待验证清单、技能错位 | 照 `answering.md` §7 八节聚合 |
 | `link.py` | **横向边**：共现检测、三档建议、建边/拒边、登记簿 | 手工扫证据找共现（`manual-mode.md` ⑦） |
 | `skill.py` | **技能**：播种、新建、连 requires、算错位、记项目与 Playbook | 手工建 `skills/*.md`（`manual-mode.md` ⑧） |
+| `enrich.py` | **正文**：铺页面结构、排队待补、批量写详解、看完整度 | 手工按 `templates/README.md` 写 |
+| `check_links.py` | **外链体检**：离线标可疑地址，`--check` 发请求核状态码与迁移 | 手工逐个点开（`recording.md` §6.8） |
 | `migrate_s1.py` | 迁移（3.4.0）：可读文件名 + 字段统一 + 清理旧字段。**幂等，不动分数** | 手工改名与补字段 |
 | `migrate_s2.py` | 迁移（3.5.0）：`target_ids` 多值化 + 种子标 `role` + 补录无证据的分 + 合并重名 | 无替代 |
 | `migrate_s3.py` | 迁移（3.5.0）：`职业技能` 49 条改归属（**只改元数据，分数零变化**）+ 播种技能簇 | 无替代 |

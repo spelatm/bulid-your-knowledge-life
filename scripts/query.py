@@ -199,6 +199,7 @@ def query(user_id, question):
     print(f"问题：{question}\n")
     print("=" * 50)
 
+    by_name = core.index_points(udir)["by_name"]
     if not points:
         print("\n① 知识点：库中没有触及的记录，按全新知识处理。")
     else:
@@ -216,6 +217,12 @@ def query(user_id, question):
             print(f"   · {meta.get('name')}：{label}{tag} "
                   f"current={cur:.0f} {when}{via}")
             print(f"     → {ADVICE[status]}")
+            # 一句话摘要：讲解前先有个抓手，也让用户知道库里对这条是怎么描述的
+            _hit = by_name.get(str(meta.get("name")))
+            _ov = core.get_section(_hit[2] if _hit else "", "概要")
+            _m = re.search(r"^>\s*一句话[：:]\s*(.+)$", _ov or "", re.M)
+            if _m and not _m.group(1).startswith("待补"):
+                print(f"     ↳ 摘要：{_m.group(1).strip()}")
 
     pbs = match_playbooks(udir, question)
     print(f"\n② 经验 Playbook：{'命中 ' + str(len(pbs)) + ' 条' if pbs else '无'}")

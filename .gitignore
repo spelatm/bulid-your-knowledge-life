@@ -16,6 +16,9 @@ archive/*.bak
 archive/*.tar
 archive/*.tar.gz
 
+# ---- 编辑器本地配置 ----
+.obsidian/
+
 # ---- 系统垃圾 ----
 .DS_Store
 *.pyc

@@ -234,7 +234,7 @@ def consumed_keys(items, merged, hits):
 def build_profile(user_id, edu, job, region, subjects=None, keywords=None):
     """生成用户档案与推断知识点。"""
     udir = core.user_dir(user_id)
-    for sub in ("points", "experience/projects", "experience/actions",
+    for sub in ("points", "assets", "experience/projects", "experience/actions",
                 "experience/artifacts", "experience/playbooks",
                 "experience/skills", "wisdom", "features", "questions", "evidence"):
         os.makedirs(os.path.join(udir, sub), exist_ok=True)

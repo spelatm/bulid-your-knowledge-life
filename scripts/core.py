@@ -672,8 +672,12 @@ _REL_PAT = re.compile(r"\n*" + re.escape(REL_BEGIN) + r".*?"
 
 
 def render_related(entries, title="关联"):
-    """entries: [(名字, 文件名主干, 备注)] → 托管块文本。"""
-    lines = [REL_BEGIN, "", f"## {title}", ""]
+    """entries: [(名字, 文件名主干, 备注)] → 只有托管块的正文（不含标题）。
+
+    托管块**必须整块待在一个章节里**：开始/结束标记跨到别的章节上，
+    章节拆分就会把它剪断（3.10.0 之前就是「标记在前、标题在后」，一重排就坏）。
+    """
+    lines = [REL_BEGIN, ""]
     for name, stem, note in entries:
         # 主干与名字不一致（撞名加过（学科）后缀）时用别名，链接才解析得到
         link = f"[[{stem}]]" if stem == name else f"[[{stem}|{name}]]"
@@ -683,11 +687,15 @@ def render_related(entries, title="关联"):
 
 
 def set_related(body, entries, title="关联"):
-    """把托管块替换成 entries；entries 为空则整块移除。幂等。"""
-    body = _REL_PAT.sub("\n", body or "").rstrip("\n")
-    if not entries:
-        return body + "\n" if body else ""
-    return body + "\n\n" + render_related(entries, title) + "\n"
+    """把「关联」章节整体替换成 entries；entries 为空则删掉该章节。幂等。
+
+    先清掉散落在别处的孤儿标记——老档案里块是追加在文末的，
+    章节重排后会把 `<!-- related:start -->` 留在「更新记录」里。
+    """
+    body = re.sub(r"^[ \t]*" + re.escape(REL_BEGIN) + r"[ \t]*$\n?", "", body or "", flags=re.M)
+    body = re.sub(r"^[ \t]*" + re.escape(REL_END) + r"[ \t]*$\n?", "", body, flags=re.M)
+    return set_section(body, title,
+                       render_related(entries, title) if entries else "")
 
 
 # ---------- 技能簇（预设目录 skills/*.md） ----------
@@ -822,7 +830,11 @@ def write_seed_evidence(udir, target_id, score, note="", source_ref="",
 
 
 def sync_score(path, meta, body, udir):
-    """按证据重算 raw 并同步 current/peak/status/last_verified_at，然后落盘。"""
+    """按证据重算 raw 并同步 current/peak/status/last_verified_at，然后落盘。
+
+    顺手重算正文的自动块（我的掌握 / 我的经历）——否则分数变了、页面里写的
+    还是旧数字，读到的人会以哪个为准都不知道。
+    """
     ev_ids = meta.get("evidence_ids") or []
     if isinstance(ev_ids, str):
         ev_ids = [ev_ids] if ev_ids else []
@@ -833,5 +845,276 @@ def sync_score(path, meta, body, udir):
     status, base = judge_status(raw, current, peak)
     meta.update({"raw_score": round(raw, 1), "current_score": round(current, 1),
                  "peak_score": round(peak, 1), "status": status})
+    try:
+        body = refresh_body(udir, meta, body)
+    except Exception:
+        pass          # 正文结构出问题也不该挡住记账，下次 refresh 会补上
     write_md(path, meta, body)
     return raw, current, status, base
+
+
+# ---------- 知识点正文：结构、自动块、索引 ----------
+#
+# 为什么正文要分「概览 / 详解 / 我的掌握 / 我的经历」：
+# 一条知识点不是一张分数卡片，它得能回答四件事——**它是什么**（公共知识）、
+# **我掌握到什么程度**（分数与证据）、**我在哪用过**（经历）、**我得出什么判断**（经验）。
+# 前两类是骨架，后两类只能由证据长出来。
+#
+# 为什么概要必须是索引：概要写死一段话，一改详解就会漂。所以概要里的每一条
+# 都指向一个章节（`[[#详解]]`，Obsidian 能点），详解删了索引就跟着消失——
+# 用生成代替手写，漂移就没有发生的余地。
+
+AUTO_SCORE_BEGIN = "<!-- auto:score:start -->"
+AUTO_SCORE_END = "<!-- auto:score:end -->"
+AUTO_EXP_BEGIN = "<!-- auto:exp:start -->"
+AUTO_EXP_END = "<!-- auto:exp:end -->"
+
+# 章节顺序固定：概要在前，更新记录在最后
+SECTION_ORDER = ["概要", "详解", "易错点", "经验与判断",
+                 "我的掌握", "我的经历", "关联", "更新记录"]
+
+# 有内容才出现的章节（空着就不写，避免整页都是「待补」）
+CONTENT_SECTIONS = [("详解", "它是什么、怎么运转"),
+                    ("易错点", "容易错的地方、易混淆的近邻"),
+                    ("经验与判断", "我的结论、习惯、判定边界")]
+
+EV_LABEL = {
+    "project_lead": "主导项目", "teaching": "讲给别人", "artifact": "有产出",
+    "selftest_pass": "通过自测", "study": "系统学习", "self_report": "自评",
+    "inferred": "背景推断", "web_inferred": "联网推断",
+    "user_confirmed": "本人确认", "forgot": "遗忘", "selftest_fail": "自测未过",
+    "rusty_asked": "问了个生疏的", "edge_confirm": "连边确认",
+    "verify": "复核", "review": "复盘",
+}
+
+
+def load_evidence(udir, ev_id):
+    """读一条证据，返回 meta 或 None。证据只增不改，读失败按缺失处理。"""
+    path = os.path.join(udir, "evidence", f"{ev_id}.md")
+    if not os.path.exists(path):
+        return None
+    meta, _ = read_md(path)
+    return meta or None
+
+
+def load_evidence_list(udir, ev_ids):
+    """按 id 列表取证据，**按时间倒序**（最近的经历排前面）。"""
+    out = []
+    for eid in ev_ids or []:
+        m = load_evidence(udir, str(eid))
+        if m:
+            out.append(m)
+    out.sort(key=lambda m: str(m.get("occurred_at") or ""), reverse=True)
+    return out
+
+
+def split_body(body):
+    """把正文切成 (头部, [(章节名, 内容), ...])。只认 `## ` 二级标题。"""
+    lines = (body or "").splitlines()
+    idxs = [i for i, l in enumerate(lines) if l.startswith("## ")]
+    if not idxs:
+        return (body or "").rstrip("\n"), []
+    head = "\n".join(lines[:idxs[0]]).rstrip("\n")
+    secs = []
+    for k, i in enumerate(idxs):
+        end = idxs[k + 1] if k + 1 < len(idxs) else len(lines)
+        secs.append((lines[i][3:].strip(), "\n".join(lines[i + 1:end]).strip("\n")))
+    return head, secs
+
+
+def join_body(head, secs):
+    """按 SECTION_ORDER 重排后拼回正文：章节顺序稳定，diff 才读得懂。"""
+    order = {t: i for i, t in enumerate(SECTION_ORDER)}
+    secs = sorted(secs, key=lambda x: (order.get(x[0], len(SECTION_ORDER)), x[0]))
+    out = ([head, ""] if head.strip() else [])
+    for t, txt in secs:
+        out.append(f"## {t}")
+        out.append("")
+        if txt.strip():
+            out.append(txt.rstrip())
+            out.append("")
+    return "\n".join(out).rstrip() + "\n"
+
+
+def get_section(body, title):
+    _head, secs = split_body(body)
+    for t, txt in secs:
+        if t == title:
+            return txt
+    return ""
+
+
+def set_section(body, title, text):
+    """写入或替换一个章节，其余章节原样保留。空字符串 = 删除该章节。"""
+    head, secs = split_body(body)
+    text = (text or "").strip("\n")
+    found = False
+    out = []
+    for t, txt in secs:
+        if t == title:
+            found = True
+            if text:
+                out.append((t, text))
+        else:
+            out.append((t, txt))
+    if not found and text:
+        out.append((title, text))
+    return join_body(head, out)
+
+
+def _days_since(date_str):
+    try:
+        d = datetime.date.fromisoformat(str(date_str)[:10])
+    except (ValueError, TypeError):
+        return None
+    return (TODAY - d).days
+
+
+def render_score_block(meta, evs=None):
+    """「我的掌握」的自动块：分数、上次接触、证据构成。"""
+    raw = float(meta.get("raw_score", 0) or 0)
+    cur = float(meta.get("current_score", raw) or 0)
+    peak = float(meta.get("peak_score", raw) or 0)
+    evs = evs or []
+    L = []
+    if raw <= 0:
+        L.append("- 还没有证据。**0 分不代表「不会」，只代表「没记过」。**")
+    else:
+        _status, base = judge_status(raw, cur, peak)
+        label = LEVEL_LABEL.get(base, base)
+        L.append(f"- 分数：累计 **{raw:.0f}** ／ 当前 **{cur:.0f}**（{label}）／ 峰值 {peak:.0f}")
+        last = str(meta.get("last_verified_at") or "").strip()
+        days = _days_since(last) if last else None
+        if last:
+            if days == 0:
+                L.append(f"- 上次接触：{last}（今天）")
+            else:
+                L.append(f"- 上次接触：{last}"
+                         + (f"（{days} 天前）" if days is not None else ""))
+        else:
+            L.append("- 上次接触：尚无记录（分数来自冷启动推断）")
+    if evs:
+        pos = [e for e in evs if str(e.get("direction") or "positive") != "negative"]
+        neg = [e for e in evs if str(e.get("direction")) == "negative"]
+        parts = []
+        for e in pos:
+            parts.append(f"{EV_LABEL.get(str(e.get('type')), str(e.get('type')))} "
+                         f"{float(e.get('weight', 0) or 0):.0f}")
+        if parts:
+            L.append(f"- 证据 {len(pos)} 条：" + " · ".join(parts))
+        for e in neg:
+            L.append(f"- 负向 {EV_LABEL.get(str(e.get('type')), str(e.get('type')))}"
+                     f"（{e.get('occurred_at')}）")
+    pre = [str(x) for x in (meta.get("prerequisite") or [])]
+    if pre:
+        L.append("- 前置：" + "、".join(pre))
+    return "\n".join(L)
+
+
+def render_exp_block(evs):
+    """「我的经历」的自动块：从证据倒出一条时间线。
+
+    刻意只搬证据里已有的字段（日期 / 类型 / 权重 / 备注），
+    不替用户润色——经历必须是发生过的事，不是写出来的故事。
+    **种子证据不算经历**：那是「系统猜的」，不是「你干过的」。
+    """
+    real = [e for e in evs if not is_seed(e)]
+    if not real:
+        tail = "（当前分数来自背景推断，还没被确认）" if evs else ""
+        return ("- 还没有实践记录。**讲过一次、做过一次、踩过一次坑**，"
+                f"记一条证据，这里就会自动长出来。{tail}")
+    L = []
+    for e in real:
+        d = str(e.get("occurred_at") or "")[:10] or "（无日期）"
+        kind = EV_LABEL.get(str(e.get("type")), str(e.get("type")))
+        w = float(e.get("weight", 0) or 0)
+        role = "（推断）" if is_seed(e) else ""
+        note = str(e.get("note") or "").strip()
+        src = str(e.get("source_ref") or "").strip()
+        line = f"- {d} · {kind}{role} {w:.0f} 分"
+        if note:
+            line += f" · {note}"
+        if src and not src.startswith("http"):
+            line += f"（来源：{src}）"
+        elif src:
+            line += f"（[来源]({src})）"
+        L.append(line)
+    return "\n".join(L)
+
+
+def render_overview(summary, body):
+    """生成「概要」：一句话题眼 + 指向实际存在章节的索引。
+
+    索引是**按当前正文算出来的**，不是写死的清单——所以章节删了，
+    索引条目自动消失，不会指到不存在的地方。
+    """
+    _head, secs = split_body(body)
+    have = {t for t, txt in secs if txt.strip()}
+    L = [f"> 一句话：{summary.strip()}" if (summary or "").strip()
+         else "> 一句话：待补（第一次讲解时补上，一句话能说清它是什么）。", ""]
+    for title, desc in CONTENT_SECTIONS:
+        if title in have:
+            L.append(f"- [[#{title}]] — {desc}")
+    if "我的掌握" in have:
+        L.append("- [[#我的掌握]] — 分数、上次接触、证据构成")
+    if "我的经历" in have:
+        L.append("- [[#我的经历]] — 哪次实践用到了它")
+    if "关联" in have:
+        L.append("- [[#关联]] — 相邻知识点、易混淆项")
+    return "\n".join(L)
+
+
+def refresh_body(udir, meta, body, summary=None):
+    """重算自动块与概要索引，返回新正文（不落盘）。
+
+    `summary` 为 None 时沿用概要里已有的「一句话」，不会把用户写的题眼冲掉。
+    """
+    ev_ids = meta.get("evidence_ids") or []
+    if isinstance(ev_ids, str):
+        ev_ids = [ev_ids] if ev_ids else []
+    evs = load_evidence_list(udir, ev_ids)
+
+    body = set_section(body, "我的掌握",
+                       f"{AUTO_SCORE_BEGIN}\n{render_score_block(meta, evs)}\n{AUTO_SCORE_END}")
+    body = set_section(body, "我的经历",
+                       f"{AUTO_EXP_BEGIN}\n{render_exp_block(evs)}\n{AUTO_EXP_END}")
+
+    if summary is None:
+        cur = get_section(body, "概要")
+        m = re.search(r"^>\s*一句话[：:]\s*(.+)$", cur, re.M)
+        summary = m.group(1).strip() if m else ""
+        if summary.startswith("待补"):
+            summary = ""
+    body = set_section(body, "概要", render_overview(summary, body))
+    return body
+
+
+def build_point_body(name, summary="", detail="", pitfalls="", lessons="",
+                     meta=None, udir=None, related_block=None, log_lines=None):
+    """从零搭一页知识点正文。既有内容没有的情况才用它（迁移 / 新建）。"""
+    body = f"# {name}\n"
+    for title, text in (("详解", detail), ("易错点", pitfalls),
+                        ("经验与判断", lessons)):
+        if (text or "").strip():
+            body = set_section(body, title, text)
+    if related_block is not None:
+        body = set_section(body, "关联", related_block)
+    logs = list(log_lines or [])
+    if logs:
+        body = set_section(body, "更新记录", "\n".join(f"- {x}" for x in logs))
+    if meta is not None and udir:
+        body = refresh_body(udir, meta, body, summary=summary)
+    else:
+        body = set_section(body, "概要", render_overview(summary, body))
+    return body
+
+
+def add_log(body, text):
+    """往「更新记录」追加一行（同一天的重复行只留一条）。"""
+    cur = get_section(body, "更新记录")
+    line = f"- {text}"
+    lines = [l for l in cur.splitlines() if l.strip()]
+    if line in lines:
+        return body
+    lines.append(line)
+    return set_section(body, "更新记录", "\n".join(lines))
